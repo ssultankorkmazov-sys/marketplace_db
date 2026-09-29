@@ -17,3 +17,4 @@ export const getOrdersByUserId=(id:number)=>wait(db.orders.filter(o=>o.user_id==
 const orderItems=(id:number):(OrderItem&{product?:Product})[]=>db.orderItems.filter(i=>i.order_id===id).map(i=>({...i,product:db.products.find(p=>p.product_id===i.product_id)}))
 export const getOrderById=(id:number):Promise<{order:Order;items:ReturnType<typeof orderItems>;payment?:Payment;user?:User}|undefined>=>{const order=db.orders.find(o=>o.order_id===id);return wait(order&&{order,items:orderItems(id),payment:db.payments.find(p=>p.order_id===id),user:db.users.find(u=>u.user_id===order.user_id)})}
 export const nextOrderId=()=>Math.max(...db.orders.map(o=>o.order_id))+1
+export const productCategoryName=(pid:number)=>{const p=db.products.find(x=>x.product_id===pid);return db.categories.find(c=>c.category_id===p?.category_id)?.category_name??''}
