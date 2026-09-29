@@ -13,8 +13,20 @@ export const getCategoryById=(id:number):Promise<Category|undefined>=>wait(db.ca
 export const getReviewsByProductId=(id:number):Promise<(Review&{user?:User})[]>=>wait(db.reviews.filter(r=>r.product_id===id).map(r=>({...r,user:db.users.find(u=>u.user_id===r.user_id)})))
 export const getReviewsByUserId=(id:number)=>wait(db.reviews.filter(r=>r.user_id===id).map(r=>({...r,product:db.products.find(p=>p.product_id===r.product_id)})))
 export const getUserById=(id:number)=>wait(db.users.find(u=>u.user_id===id))
-export const getOrdersByUserId=(id:number)=>wait(db.orders.filter(o=>o.user_id===id).map(o=>({...o,items:orderItems(o.order_id)})))
-const orderItems=(id:number):(OrderItem&{product?:Product})[]=>db.orderItems.filter(i=>i.order_id===id).map(i=>({...i,product:db.products.find(p=>p.product_id===i.product_id)}))
-export const getOrderById=(id:number):Promise<{order:Order;items:ReturnType<typeof orderItems>;payment?:Payment;user?:User}|undefined>=>{const order=db.orders.find(o=>o.order_id===id);return wait(order&&{order,items:orderItems(id),payment:db.payments.find(p=>p.order_id===id),user:db.users.find(u=>u.user_id===order.user_id)})}
-export const nextOrderId=()=>Math.max(...db.orders.map(o=>o.order_id))+1
 export const productCategoryName=(pid:number)=>{const p=db.products.find(x=>x.product_id===pid);return db.categories.find(c=>c.category_id===p?.category_id)?.category_name??''}
+
+// Orders = mock rows + orders created at checkout (kept in localStorage, shaped like the DB tables).
+type OrderBundle={order:Order;items:OrderItem[];payment?:Payment}
+const loadSaved=():OrderBundle[]=>{try{return JSON.parse(localStorage.getItem('orders')??'[]')}catch{return[]}}
+const allOrders=():OrderBundle[]=>[...db.orders.map(order=>({order,items:db.orderItems.filter(i=>i.order_id===order.order_id),payment:db.payments.find(p=>p.order_id===order.order_id)})),...loadSaved()]
+const withProduct=(items:OrderItem[])=>items.map(i=>({...i,product:db.products.find(p=>p.product_id===i.product_id)}))
+export const getOrdersByUserId=(id:number)=>wait(allOrders().filter(b=>b.order.user_id===id).map(b=>({...b.order,items:withProduct(b.items)})))
+export const getOrderById=(id:number)=>{const b=allOrders().find(x=>x.order.order_id===id);return wait(b&&{order:b.order,items:withProduct(b.items),payment:b.payment,user:db.users.find(u=>u.user_id===b.order.user_id)})}
+export const getPaymentByOrderId=(id:number)=>wait(allOrders().find(b=>b.order.order_id===id)?.payment)
+export const nextOrderId=()=>Math.max(...allOrders().map(b=>b.order.order_id))+1
+const METHODS:Record<string,string>={card:'Bank Card',kaspi:'Kaspi Pay',cash:'Cash on delivery'}
+export function createOrder(userId:number,lines:{product_id:number;quantity:number;unit_price:number}[],pay:string){
+const order_id=nextOrderId(),now=new Date().toISOString(),total=lines.reduce((a,l)=>a+l.quantity*l.unit_price,0),all=allOrders()
+const item0=Math.max(0,...all.flatMap(b=>b.items.map(i=>i.order_item_id))),pay0=Math.max(0,...all.map(b=>b.payment?.payment_id??0))
+const bundle:OrderBundle={order:{order_id,user_id:userId,order_date:now,status:'Processing',total_amount:total},items:lines.map((l,i)=>({order_item_id:item0+i+1,order_id,...l})),payment:{payment_id:pay0+1,order_id,payment_date:now,amount:total,payment_method:METHODS[pay]??'Bank Card',status:pay==='cash'?'Pending':'Paid'}}
+localStorage.setItem('orders',JSON.stringify([...loadSaved(),bundle]));return order_id}

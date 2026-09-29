@@ -2,7 +2,8 @@ import {useEffect,useState,type ReactNode} from 'react'
 import {Link,NavLink,useNavigate,useSearchParams} from 'react-router-dom'
 import {Search,Heart,ShoppingCart,User,MapPin,Star,Store,Inbox,X,Smartphone,Laptop,Tablet,Headphones,Gamepad2,Shirt,Home as HomeIcon,Sparkles,BookOpen,Package,LayoutGrid,Truck,AlertCircle,Instagram,Send,Youtube,type LucideIcon} from 'lucide-react'
 import {useStore} from '../context/Store'
-import {productCategoryName,type ProductStats} from '../services'
+import type {ProductStats} from '../services'
+import {photoOverrides,productImages} from '../data/productImages'
 export const formatPrice=(n:number)=>Math.round(n).toLocaleString('ru-RU')+' ₸'
 export function useAsync<T>(fn:()=>Promise<T>,deps:unknown[]){const[s,set]=useState<{data?:T;error?:string;loading:boolean}>({loading:true})
 useEffect(()=>{let ok=true;set({loading:true});fn().then(d=>ok&&set({data:d,loading:false})).catch(e=>ok&&set({error:String(e),loading:false}));return()=>{ok=false}},deps);return s}
@@ -23,9 +24,8 @@ export const ErrorState=({msg}:{msg?:string})=><div className="py-16 text-center
 export const EmptyState=({title,text,to='/',cta='Перейти к покупкам'}:{title:string;text?:string;to?:string;cta?:string})=><div className="mx-auto max-w-sm py-16 text-center"><div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-neutral-100"><Inbox className="text-neutral-400" size={28}/></div><h2 className="mt-4 text-lg font-semibold">{title}</h2><p className="mt-1 text-sm text-neutral-500">{text}</p><Link to={to} className={`${btn.primary} mt-5`}>{cta}</Link></div>
 export const Stars=({v}:{v:number})=><span className="inline-flex items-center gap-1 text-sm font-medium"><Star size={14} className="fill-amber-400 text-amber-400"/>{v?v.toFixed(1):'—'}</span>
 
-// DB has no image_url: clean generated tile (category icon) instead of random photos.
-export const Img=({id,alt,className=''}:{id:number;alt:string;className?:string})=>{const Icon=catIcon(productCategoryName(id))
-return <div role="img" aria-label={alt} className={`flex items-center justify-center bg-gradient-to-br from-neutral-50 to-neutral-200 text-neutral-400 ${className}`}><Icon strokeWidth={1.25} className="h-2/5 w-2/5"/></div>}
+export const Img=({id,alt,className=''}:{id:number;alt:string;className?:string})=>{const[bad,setBad]=useState(false);const src=(!bad&&photoOverrides[id])||productImages[id]
+return <div className={`flex items-center justify-center bg-white ${className}`}>{src?<img src={src} alt={alt} loading="lazy" onError={()=>setBad(true)} className="h-full w-full object-contain p-[8%]"/>:<Package className="text-neutral-300"/>}</div>}
 export const Qty=({v,max,on}:{v:number;max:number;on:(n:number)=>void})=><div className="inline-flex items-center overflow-hidden rounded-lg border border-neutral-300 bg-white"><button aria-label="Меньше" className="h-9 w-9 hover:bg-neutral-100" onClick={()=>on(Math.max(1,v-1))}>−</button><span className="w-9 text-center text-sm font-medium">{v}</span><button aria-label="Больше" className="h-9 w-9 hover:bg-neutral-100 disabled:opacity-30" disabled={v>=max} onClick={()=>on(Math.min(max,v+1))}>+</button></div>
 export const Logo=()=><Link to="/" className="flex shrink-0 items-center gap-2 text-xl font-extrabold tracking-tight"><span className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand text-white"><Store size={18}/></span><span>Market<span className="text-brand">KZ</span></span></Link>
 
@@ -64,4 +64,4 @@ return <article className="group flex flex-col overflow-hidden rounded-xl border
 <div className="mt-2 text-xl font-bold tracking-tight">{formatPrice(p.price)}</div>
 <div className={`mt-0.5 flex items-center gap-1 text-xs ${p.stock_quantity?'text-emerald-600':'text-neutral-400'}`}>{p.stock_quantity?<><Truck size={13}/>Доставка завтра</>:'Нет в наличии'}</div>
 <button disabled={!p.stock_quantity} onClick={()=>add(p.product_id,p.stock_quantity)} className={`${inCart?btn.secondary:btn.primary} mt-3 w-full`}>{inCart?`В корзине · ${cart[p.product_id]}`:'Добавить в корзину'}</button></div></article>}
-export const ProductGrid=({items}:{items:ProductStats[]})=><div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 md:gap-4">{items.map(p=><ProductCard key={p.product_id} p={p}/>)}</div>
+export const ProductGrid=({items,cols='lg:grid-cols-4 xl:grid-cols-5'}:{items:ProductStats[];cols?:string})=><div className={`grid grid-cols-2 gap-3 md:grid-cols-3 ${cols} md:gap-4`}>{items.map(p=><ProductCard key={p.product_id} p={p}/>)}</div>
