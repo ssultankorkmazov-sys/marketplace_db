@@ -25,6 +25,21 @@ integration('PostgreSQL catalog integration (TEST_DATABASE_URL only)', () => {
     expect(response.body.total).toBe(50);
     expect(response.body.items[0].price).toBeLessThanOrEqual(response.body.items[4].price);
   });
+
+  it('reports the actual database context and public product count through readiness diagnostics', async () => {
+    const response = await request(createApp(pool)).get('/api/health/ready');
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({
+      current_database: decodeURIComponent(new URL(databaseUrl!).pathname.slice(1)),
+      current_schema: 'public',
+      products_relation: 'products',
+      products_count: 50,
+    });
+    expect(typeof response.body.current_user).toBe('string');
+    expect(Object.keys(response.body).sort()).toEqual([
+      'current_database', 'current_schema', 'current_user', 'products_count', 'products_relation',
+    ]);
+  });
 });
 
 type Agent = ReturnType<typeof request.agent>;

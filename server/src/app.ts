@@ -2,7 +2,7 @@ import express, { type ErrorRequestHandler } from 'express';
 import type { Pool, PoolClient } from 'pg';
 import { createHash, randomBytes, scrypt as scryptCallback, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
-import { checkDatabase } from './db.js';
+import { checkDatabase, checkDatabaseReadiness } from './db.js';
 
 const scrypt = promisify(scryptCallback);
 const COOKIE = 'marketkz_session';
@@ -378,6 +378,16 @@ export function createApp(pool: Pool, options: { secureCookies?: boolean } = {})
     } catch (error) {
       console.error('Database health check failed:', error instanceof Error ? error.message : 'Unknown error');
       response.status(503).json({ error: 'Service temporarily unavailable' });
+    }
+  });
+
+  app.get('/api/health/ready', async (_request, response) => {
+    try {
+      const readiness = await checkDatabaseReadiness(pool);
+      return response.status(readiness.products_relation ? 200 : 503).json(readiness);
+    } catch (error) {
+      console.error('Database readiness check failed:', error instanceof Error ? error.message : 'Unknown error');
+      return response.status(503).json({ error: 'Database readiness check failed' });
     }
   });
 
