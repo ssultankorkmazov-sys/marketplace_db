@@ -12,6 +12,10 @@ Marketplace application: React, TypeScript, Vite, Tailwind CSS, React Router; No
 
 The backend does not import or reset the database on startup. The SQL seed file remains the original catalog and fixture source.
 
+## Production hosting
+
+The GitHub Pages workflow builds the frontend with `VITE_API_URL=https://marketkz-api.onrender.com/api/v1`. The API allows credentialed browser requests from the Pages origin `https://ssultankorkmazov-sys.github.io` and the local development origins `http://localhost:5173` and `http://127.0.0.1:5173`. Keep `NODE_ENV=production` on the Render service so its cross-site session cookie is sent with `SameSite=None; Secure`.
+
 ## Authentication
 
 Registration, login, logout and profile updates use the backend. Passwords are hashed with Node's scrypt. Sessions use random tokens in HttpOnly, SameSite=Lax cookies; PostgreSQL stores token hashes and expirations. Production cookies are Secure. The API never returns password hashes.

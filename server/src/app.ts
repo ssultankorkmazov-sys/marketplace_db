@@ -6,6 +6,11 @@ import { checkDatabase, checkDatabaseReadiness } from './db.js';
 
 const scrypt = promisify(scryptCallback);
 const COOKIE = 'marketkz_session';
+const ALLOWED_FRONTEND_ORIGINS = new Set([
+  'https://ssultankorkmazov-sys.github.io',
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+]);
 type UserRow = { user_id: number; name: string; email: string; phone: string; address: string | null; role: 'user' | 'admin' };
 const publicUser = (row: UserRow) => ({ user_id: row.user_id, name: row.name, email: row.email, phone: row.phone, address: row.address, role: row.role });
 const validEmail = (value: unknown): value is string => typeof value === 'string' && value.length <= 150 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
@@ -21,7 +26,7 @@ const verifyPassword = async (password: string, encoded: string) => {
   return timingSafeEqual(actual, Buffer.from(keyHex, 'hex'));
 };
 const tokenHash = (token: string) => createHash('sha256').update(token).digest('hex');
-const cookieOptions = (secure: boolean, maxAge = 60 * 60 * 24 * 14) => `Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure ? '; Secure' : ''}`;
+const cookieOptions = (secure: boolean, maxAge = 60 * 60 * 24 * 14) => `Path=/; HttpOnly; SameSite=${secure ? 'None' : 'Lax'}; Max-Age=${maxAge}${secure ? '; Secure' : ''}`;
 function cookieValue(header: string | undefined, name: string) {
   return header?.split(';').map((part) => part.trim()).find((part) => part.startsWith(`${name}=`))?.slice(name.length + 1);
 }
@@ -64,6 +69,26 @@ function sendDatabaseError(error: unknown, next: (error?: unknown) => void) {
 export function createApp(pool: Pool, options: { secureCookies?: boolean } = {}) {
   const app = express();
   app.disable('x-powered-by');
+  app.use((request, response, next) => {
+    const origin = request.get('Origin');
+    const allowedOrigin = origin !== undefined && ALLOWED_FRONTEND_ORIGINS.has(origin);
+    response.vary('Origin');
+    if (allowedOrigin) {
+      response.setHeader('Access-Control-Allow-Origin', origin);
+      response.setHeader('Access-Control-Allow-Credentials', 'true');
+    } else if (origin) {
+      return response.status(403).json({ error: 'Origin not allowed.' });
+    }
+
+    if (request.method === 'OPTIONS') {
+      if (allowedOrigin) {
+        response.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
+        response.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+      }
+      return response.status(204).end();
+    }
+    return next();
+  });
   app.use(express.json({ limit: '100kb' }));
 
   app.post('/api/v1/auth/register', async (request, response, next) => {

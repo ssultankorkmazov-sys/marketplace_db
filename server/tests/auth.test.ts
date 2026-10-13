@@ -7,6 +7,19 @@ const person = { user_id: 55, name: 'Test Person', email: 'person@example.kz', p
 function appWith(query: Pool['query']) { return createApp({ query } as unknown as Pool); }
 
 describe('server authentication and profile', () => {
+  it('sets a secure cross-site session cookie when running in production mode', async () => {
+    const query = vi.fn().mockImplementation((sql: string) => sql.includes('INSERT INTO users')
+      ? Promise.resolve({ rows: [person] }) : Promise.resolve({ rows: [] }));
+    const response = await request(createApp({ query } as unknown as Pool, { secureCookies: true }))
+      .post('/api/v1/auth/register')
+      .send({ name: person.name, email: person.email, phone: person.phone, password: 'long-password' });
+
+    expect(response.status).toBe(201);
+    expect(response.headers['set-cookie'][0]).toMatch(/HttpOnly/);
+    expect(response.headers['set-cookie'][0]).toMatch(/SameSite=None/);
+    expect(response.headers['set-cookie'][0]).toMatch(/; Secure/);
+  });
+
   it('validates registration, hashes passwords, issues an HttpOnly cookie, and omits the hash', async () => {
     const query = vi.fn().mockImplementation((sql: string) => sql.includes('INSERT INTO users')
       ? Promise.resolve({ rows: [person] }) : Promise.resolve({ rows: [] }));
