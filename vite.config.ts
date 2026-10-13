@@ -5,4 +5,5 @@ import tailwind from '@tailwindcss/vite'
 export default defineConfig({
     plugins: [react(), tailwind()],
     base: '/marketplace_db/',
+    server: { proxy: { '/api': 'http://localhost:3001' } },
 })

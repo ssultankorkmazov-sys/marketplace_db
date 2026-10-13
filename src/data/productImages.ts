@@ -41,4 +41,4 @@ const kindOf=(t:string)=>kinds.find(([r])=>r.test(t))?.[1]??'box'
 export const photoOverrides:Record<number,string>={}
 const memo=new Map<string,string>()
 // Image for a product id: derived from its current name/description, so admin-created products get one too.
-export const productImage=(id:number)=>{const p=T.products().find(x=>x.product_id===id);const t=p?`${p.name} ${p.description??''}`:'';let v=memo.get(t);if(!v){v=svg(art[kindOf(t)]);memo.set(t,v)};return v}
+export const productImage=(id:number,name?:string)=>{const p=T.products().find(x=>x.product_id===id);const t=name??(p?`${p.name} ${p.description??''}`:'');let v=memo.get(t);if(!v){v=svg(art[kindOf(t)]);memo.set(t,v)};return v}

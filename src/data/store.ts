@@ -3,8 +3,8 @@ import * as seed from './mock'
 import type {User,Category,Product,Order,OrderItem,Payment,Review} from '../types/database'
 const cache=new Map<string,unknown[]>()
 // Bump SEED_VERSION whenever db/marketplace_db.sql / src/data/mock.ts changes (npm run seed:generate).
-// v1 = placeholder seed, v2 = exact SQL seed (350 records).
-export const SEED_VERSION='2'
+// v1 = placeholder seed, v2 = exact SQL seed (350 records), v3 = clear obsolete plaintext demo credentials.
+export const SEED_VERSION='3'
 const VKEY='marketkz_seed_version',SEED_ID_MAX=50
 const TABLE_KEYS=['marketkz_users','marketkz_products','marketkz_categories','marketkz_reviews','marketkz_orders','marketkz_order_items','marketkz_payments']
 const OWNED=[...TABLE_KEYS,'marketkz_credentials','marketkz_auth']
@@ -24,14 +24,12 @@ put('marketkz_orders',[...seed.orders,...keepOrders])
 put('marketkz_order_items',[...seed.orderItems,...read<OrderItem>('marketkz_order_items').filter(i=>i.order_id>SEED_ID_MAX&&oids.has(i.order_id))])
 put('marketkz_payments',[...seed.payments,...read<Payment>('marketkz_payments').filter(p=>p.order_id>SEED_ID_MAX&&oids.has(p.order_id))])
 put('marketkz_reviews',[...seed.reviews,...read<Review>('marketkz_reviews').filter(r=>r.review_id>SEED_ID_MAX&&keep.has(r.user_id))])
-const emails=new Set(keepUsers.map(u=>u.email.toLowerCase()));let creds:Record<string,string>={};try{creds=JSON.parse(localStorage.getItem('marketkz_credentials')??'{}')}catch{/* ignore */}
-put('marketkz_credentials',Object.fromEntries(Object.entries(creds).filter(([e])=>emails.has(e))))
-try{const a=JSON.parse(localStorage.getItem('marketkz_auth')??'null');if(a&&a.user_id!==0&&!keep.has(a.user_id))localStorage.removeItem('marketkz_auth')}catch{localStorage.removeItem('marketkz_auth')}}
+try{localStorage.removeItem('marketkz_credentials');localStorage.removeItem('marketkz_auth')}catch{/* ignore legacy demo credentials */}}
 export function checkSeedVersion(){if(checked)return;checked=true
 try{const v=localStorage.getItem(VKEY);const legacy=v===null&&TABLE_KEYS.some(k=>localStorage.getItem(k)!==null) // tables from before versioning = v1
 if((v!==null&&v!==SEED_VERSION)||legacy)migrateSeed()
 localStorage.setItem(VKEY,SEED_VERSION)}catch{/* storage unavailable */}}
-// Development helper: wipes every marketkz_* table, credentials and session; next read re-seeds from mock.ts.
+// Development helper for the still-local fixture tables; next read re-seeds them from mock.ts.
 export function resetAllData(){try{OWNED.forEach(k=>localStorage.removeItem(k));localStorage.removeItem(VKEY)}catch{/* ignore */}cache.clear();checked=false}
 function load<R>(key:string,init:R[]):R[]{checkSeedVersion();const hit=cache.get(key);if(hit)return hit as R[];let rows=init
 try{const raw=localStorage.getItem(key);if(raw)rows=JSON.parse(raw);else localStorage.setItem(key,JSON.stringify(init))}catch{/* storage unavailable: seed only */}
