@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import request from 'supertest';
+import { Pool } from 'pg';
 import { createApp } from '../src/app.js';
 import { createPool } from '../src/db.js';
 
@@ -39,6 +40,29 @@ integration('PostgreSQL catalog integration (TEST_DATABASE_URL only)', () => {
     expect(Object.keys(response.body).sort()).toEqual([
       'current_database', 'current_schema', 'current_user', 'products_count', 'products_relation',
     ]);
+  });
+
+  it('serves product and category routes when the PostgreSQL search_path excludes public', async () => {
+    const isolatedPool = new Pool({ connectionString: databaseUrl!, options: '-c search_path=pg_catalog' });
+    try {
+      const app = createApp(isolatedPool);
+      const [products, categories, category, categoryProducts, product] = await Promise.all([
+        request(app).get('/api/v1/products?page=1&pageSize=10'),
+        request(app).get('/api/v1/categories'),
+        request(app).get('/api/v1/categories/1'),
+        request(app).get('/api/v1/categories/1/products?page=1&pageSize=10'),
+        request(app).get('/api/v1/products/1'),
+      ]);
+      expect(products.status).toBe(200);
+      expect(products.body.total).toBe(50);
+      expect(categories.status).toBe(200);
+      expect(categories.body).toHaveLength(50);
+      expect(category.status).toBe(200);
+      expect(categoryProducts.status).toBe(200);
+      expect(product.status).toBe(200);
+    } finally {
+      await isolatedPool.end();
+    }
   });
 });
 

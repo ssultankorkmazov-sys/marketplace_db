@@ -394,7 +394,7 @@ export function createApp(pool: Pool, options: { secureCookies?: boolean } = {})
   app.get('/api/v1/categories', (_request, response, next) => {
     void pool.query(
       `SELECT c.category_id, c.category_name, COUNT(p.product_id)::int AS count
-       FROM categories c LEFT JOIN products p ON p.category_id = c.category_id
+       FROM public.categories c LEFT JOIN public.products p ON p.category_id = c.category_id
        GROUP BY c.category_id ORDER BY c.category_id`,
     ).then(({ rows }) => response.json(rows)).catch(next);
   });
@@ -405,7 +405,7 @@ export function createApp(pool: Pool, options: { secureCookies?: boolean } = {})
     try {
       const { rows } = await pool.query(
         `SELECT c.category_id, c.category_name, COUNT(p.product_id)::int AS count
-         FROM categories c LEFT JOIN products p ON p.category_id = c.category_id
+         FROM public.categories c LEFT JOIN public.products p ON p.category_id = c.category_id
          WHERE c.category_id = $1 GROUP BY c.category_id`, [categoryId],
       );
       if (!rows[0]) return response.status(404).json({ error: 'Category not found' });
@@ -429,7 +429,7 @@ export function createApp(pool: Pool, options: { secureCookies?: boolean } = {})
       const { rows } = await pool.query(
         `SELECT p.product_id, p.name, p.description, p.price::float8 AS price, p.stock_quantity, p.category_id,
                 COALESCE(AVG(r.rating), 0)::float AS rating, COUNT(r.review_id)::int AS reviews
-         FROM products p LEFT JOIN reviews r ON r.product_id = p.product_id
+         FROM public.products p LEFT JOIN public.reviews r ON r.product_id = p.product_id
          WHERE p.product_id = $1
          GROUP BY p.product_id`, [productId],
       );
@@ -511,11 +511,11 @@ async function listProducts(
   try {
     const countValues = [...values];
     const [countResult, productsResult] = await Promise.all([
-      pool.query(`SELECT COUNT(*)::int AS total FROM products p ${where}`, countValues),
+      pool.query(`SELECT COUNT(*)::int AS total FROM public.products p ${where}`, countValues),
       pool.query(
         `SELECT p.product_id, p.name, p.description, p.price::float8 AS price, p.stock_quantity, p.category_id,
                 COALESCE(AVG(r.rating), 0)::float AS rating, COUNT(r.review_id)::int AS reviews
-         FROM products p LEFT JOIN reviews r ON r.product_id = p.product_id ${where}
+         FROM public.products p LEFT JOIN public.reviews r ON r.product_id = p.product_id ${where}
          GROUP BY p.product_id ORDER BY ${column} ${direction}, p.product_id ASC
          LIMIT $${values.length + 1} OFFSET $${values.length + 2}`,
         [...values, pageSize, offset],

@@ -16,6 +16,7 @@ describe('catalog API', () => {
     const response = await request(appWith(query)).get('/api/v1/categories/');
     expect(response.status).toBe(200);
     expect(response.body[0]).toMatchObject({ category_name: 'Smartphones', count: 3 });
+    expect(String(query.mock.calls[0][0])).toContain('FROM public.categories c LEFT JOIN public.products p');
   });
 
   it('lists products and their rating summary', async () => {
@@ -24,6 +25,8 @@ describe('catalog API', () => {
     const response = await request(appWith(query)).get('/api/v1/products');
     expect(response.status).toBe(200);
     expect(response.body).toMatchObject({ total: 1, items: [product] });
+    expect(query.mock.calls.some(([sql]) => String(sql).includes('FROM public.products p'))).toBe(true);
+    expect(query.mock.calls.some(([sql]) => String(sql).includes('LEFT JOIN public.reviews r'))).toBe(true);
   });
 
   it('searches and filters with bound values', async () => {
