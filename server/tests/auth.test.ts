@@ -5,11 +5,19 @@ import { createApp } from '../src/app.js';
 
 const person = { user_id: 55, name: 'Test Person', email: 'person@example.kz', phone: '+77001234567', address: null, role: 'user' };
 function appWith(query: Pool['query']) { return createApp({ query } as unknown as Pool); }
+function auditInsertResult(values: unknown[] = []) {
+  return { rows: [{
+    log_id: '900', user_id: values[0] ?? null, action: values[1], entity_type: values[2] ?? null,
+    entity_id: values[3] ?? null, status: values[4], details: JSON.parse(String(values[5] ?? '{}')),
+    ip_address: values[6] ?? null, created_at: '2026-10-28T00:00:00.000Z',
+  }] };
+}
 
 describe('server authentication and profile', () => {
   it('sets a secure cross-site session cookie when running in production mode', async () => {
-    const query = vi.fn().mockImplementation((sql: string) => sql.includes('INSERT INTO users')
-      ? Promise.resolve({ rows: [person] }) : Promise.resolve({ rows: [] }));
+    const query = vi.fn().mockImplementation((sql: string, values: unknown[] = []) => sql.includes('INSERT INTO users')
+      ? Promise.resolve({ rows: [person] }) : sql.includes('INSERT INTO audit_logs')
+        ? Promise.resolve(auditInsertResult(values)) : Promise.resolve({ rows: [] }));
     const response = await request(createApp({ query } as unknown as Pool, { secureCookies: true }))
       .post('/api/v1/auth/register')
       .send({ name: person.name, email: person.email, phone: person.phone, password: 'long-password' });
@@ -21,8 +29,9 @@ describe('server authentication and profile', () => {
   });
 
   it('validates registration, hashes passwords, issues an HttpOnly cookie, and omits the hash', async () => {
-    const query = vi.fn().mockImplementation((sql: string) => sql.includes('INSERT INTO users')
-      ? Promise.resolve({ rows: [person] }) : Promise.resolve({ rows: [] }));
+    const query = vi.fn().mockImplementation((sql: string, values: unknown[] = []) => sql.includes('INSERT INTO users')
+      ? Promise.resolve({ rows: [person] }) : sql.includes('INSERT INTO audit_logs')
+        ? Promise.resolve(auditInsertResult(values)) : Promise.resolve({ rows: [] }));
     const response = await request(appWith(query)).post('/api/v1/auth/register').send({ name: ' Test Person ', email: 'PERSON@example.kz', phone: '+77001234567', address: '', password: 'long-password' });
     expect(response.status).toBe(201);
     expect(response.body.user).toMatchObject(person);
@@ -52,9 +61,10 @@ describe('server authentication and profile', () => {
   });
 
   it('updates only the identity established by the server session', async () => {
-    const query = vi.fn().mockImplementation((sql: string) => {
+    const query = vi.fn().mockImplementation((sql: string, values: unknown[] = []) => {
       if (sql.includes('INSERT INTO users')) return Promise.resolve({ rows: [person] });
       if (sql.includes('INSERT INTO user_sessions')) return Promise.resolve({ rows: [] });
+      if (sql.includes('INSERT INTO audit_logs')) return Promise.resolve(auditInsertResult(values));
       if (sql.includes('FROM user_sessions')) return Promise.resolve({ rows: [person] });
       if (sql.includes('UPDATE users')) return Promise.resolve({ rows: [{ ...person, name: 'Updated User' }] });
       return Promise.resolve({ rows: [] });
@@ -70,11 +80,14 @@ describe('server authentication and profile', () => {
   });
 
   it('verifies the stored password hash without returning it to the client', async () => {
-    const registerQuery = vi.fn().mockImplementation((sql: string, values: unknown[]) => sql.includes('INSERT INTO users')
-      ? Promise.resolve({ rows: [person] }) : Promise.resolve({ rows: [] }));
+    const registerQuery = vi.fn().mockImplementation((sql: string, values: unknown[] = []) => sql.includes('INSERT INTO users')
+      ? Promise.resolve({ rows: [person] }) : sql.includes('INSERT INTO audit_logs')
+        ? Promise.resolve(auditInsertResult(values)) : Promise.resolve({ rows: [] }));
     await request(appWith(registerQuery)).post('/api/v1/auth/register').send({ name: person.name, email: person.email, phone: person.phone, password: 'long-password' });
     const hash = String(registerQuery.mock.calls[0][1][4]);
-    const loginQuery = vi.fn().mockResolvedValue({ rows: [{ ...person, password_hash: hash }] });
+    const loginQuery = vi.fn().mockImplementation((sql: string, values: unknown[] = []) => sql.includes('INSERT INTO audit_logs')
+      ? Promise.resolve(auditInsertResult(values)) : sql.includes('FROM users WHERE lower(email)')
+        ? Promise.resolve({ rows: [{ ...person, password_hash: hash }] }) : Promise.resolve({ rows: [] }));
     const success = await request(appWith(loginQuery)).post('/api/v1/auth/login').send({ email: person.email, password: 'long-password' });
     expect(success.status).toBe(200);
     expect(success.body.user).toMatchObject(person);

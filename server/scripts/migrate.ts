@@ -3,19 +3,21 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { createPool } from '../src/db.js';
 import { loadConfig } from '../src/config.js';
+import { applyMigrations, assertMigrationTargetDatabase } from '../src/migrations.js';
 
 dotenv.config({ path: resolve(process.cwd(), '../.env') });
 const pool = createPool(loadConfig());
 try {
-  const migrations = ['001_auth.sql', '002_order_delivery.sql'];
+  const names = ['001_auth.sql', '002_order_delivery.sql', '003_audit_logs.sql'];
+  const migrations = await Promise.all(names.map(async (name) => ({
+    name,
+    sql: await readFile(resolve(process.cwd(), `../db/migrations/${name}`), 'utf8'),
+  })));
   const client = await pool.connect();
   try {
-    await client.query('BEGIN');
-    for (const migration of migrations) await client.query(await readFile(resolve(process.cwd(), `../db/migrations/${migration}`), 'utf8'));
-    await client.query('COMMIT');
-    console.log('Pending additive migrations applied. Existing data was preserved.');
-  } catch (error) {
-    await client.query('ROLLBACK');
-    throw error;
+    await assertMigrationTargetDatabase(client);
+    const applied = await applyMigrations(client, migrations);
+    if (applied.length) console.log(`Applied/recognized migrations: ${applied.join(', ')}`);
+    else console.log('No pending migrations.');
   } finally { client.release(); }
 } finally { await pool.end(); }

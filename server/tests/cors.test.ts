@@ -30,6 +30,26 @@ describe('CORS allowlist', () => {
     expect(response.headers['access-control-allow-credentials']).toBe('true');
   });
 
+  it('keeps local HTTP origins disabled when configured for production', async () => {
+    const query = vi.fn();
+    const response = await request(createApp({ query } as unknown as Pool, { allowLocalOrigins: false }))
+      .get('/api/v1/categories')
+      .set('Origin', localOrigins[0]);
+    expect(response.status).toBe(403);
+    expect(response.headers['access-control-allow-origin']).toBeUndefined();
+    expect(query).not.toHaveBeenCalled();
+  });
+
+  it('keeps the GitHub Pages origin enabled in production mode', async () => {
+    const query = vi.fn().mockResolvedValue({ rows: [] });
+    const response = await request(createApp({ query } as unknown as Pool, { allowLocalOrigins: false }))
+      .get('/api/v1/categories')
+      .set('Origin', frontendOrigin);
+    expect(response.status).toBe(200);
+    expect(response.headers['access-control-allow-origin']).toBe(frontendOrigin);
+    expect(response.headers['access-control-allow-credentials']).toBe('true');
+  });
+
   it('answers JSON registration preflight with the allowed method and headers', async () => {
     const query = vi.fn();
     const response = await request(createApp({ query } as unknown as Pool))

@@ -3,15 +3,21 @@ import type { Pool, PoolClient } from 'pg';
 import { createHash, randomBytes, scrypt as scryptCallback, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
 import { checkDatabase, checkDatabaseReadiness } from './db.js';
+import { insertAuditLog, publishAuditLog, type AuditEventInput, type AuditPublisher } from './audit.js';
 
 const scrypt = promisify(scryptCallback);
-const COOKIE = 'marketkz_session';
+export const SESSION_COOKIE_NAME = 'marketkz_session';
 const ALLOWED_FRONTEND_ORIGINS = new Set([
   'https://ssultankorkmazov-sys.github.io',
   'http://localhost:5173',
   'http://127.0.0.1:5173',
 ]);
+export function isAllowedFrontendOrigin(origin: string | undefined, allowLocalOrigins = true): origin is string {
+  return origin === 'https://ssultankorkmazov-sys.github.io' ||
+    (allowLocalOrigins && origin !== undefined && ALLOWED_FRONTEND_ORIGINS.has(origin));
+}
 type UserRow = { user_id: number; name: string; email: string; phone: string; address: string | null; role: 'user' | 'admin' };
+export type SessionUser = UserRow;
 const publicUser = (row: UserRow) => ({ user_id: row.user_id, name: row.name, email: row.email, phone: row.phone, address: row.address, role: row.role });
 const validEmail = (value: unknown): value is string => typeof value === 'string' && value.length <= 150 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 const passwordHash = async (password: string) => {
@@ -33,6 +39,7 @@ function cookieValue(header: string | undefined, name: string) {
 class ApiError extends Error { constructor(public status: number, message: string) { super(message); } }
 type CheckoutLine = { product_id: number; quantity: number };
 const PAYMENT_METHODS: Record<string, string> = { card: 'Bank Card', kaspi: 'Kaspi Pay', cash: 'Cash on delivery' };
+const ORDER_STATUSES = new Set(['Processing', 'Shipped', 'Delivered', 'Cancelled']);
 type ProductInput = { name: string; description: string | null; price: number; stock_quantity: number; category_id: number };
 
 function validateProduct(input: unknown): ProductInput | null {
@@ -62,16 +69,22 @@ function positiveInt(value: unknown, fallback: number, maximum: number): number 
   return Number.isSafeInteger(parsed) && parsed >= 1 && parsed <= maximum ? parsed : null;
 }
 
+function positiveBigIntId(value: unknown): string | null {
+  if (typeof value !== 'string' || !/^\d{1,19}$/.test(value)) return null;
+  const parsed = BigInt(value);
+  return parsed > 0n && parsed <= 9_223_372_036_854_775_807n ? parsed.toString() : null;
+}
+
 function sendDatabaseError(error: unknown, next: (error?: unknown) => void) {
   next(error);
 }
 
-export function createApp(pool: Pool, options: { secureCookies?: boolean } = {}) {
+export function createApp(pool: Pool, options: { secureCookies?: boolean; allowLocalOrigins?: boolean; auditPublisher?: AuditPublisher } = {}) {
   const app = express();
   app.disable('x-powered-by');
   app.use((request, response, next) => {
     const origin = request.get('Origin');
-    const allowedOrigin = origin !== undefined && ALLOWED_FRONTEND_ORIGINS.has(origin);
+    const allowedOrigin = isAllowedFrontendOrigin(origin, options.allowLocalOrigins ?? true);
     response.vary('Origin');
     if (allowedOrigin) {
       response.setHeader('Access-Control-Allow-Origin', origin);
@@ -108,6 +121,7 @@ export function createApp(pool: Pool, options: { secureCookies?: boolean } = {})
         [name.trim(), email.trim(), phone.trim(), typeof address === 'string' ? address.trim() || null : null, hash],
       );
       await issueSession(pool, rows[0], response, options.secureCookies ?? false);
+      await auditBestEffort(pool, { userId: rows[0].user_id, action: 'USER_REGISTERED', entityType: 'user', entityId: rows[0].user_id, status: 'SUCCESS' }, request.ip, options.auditPublisher);
       return response.status(201).json({ user: publicUser(rows[0]) });
     } catch (error) {
       if ((error as { code?: string }).code === '23505') return response.status(409).json({ error: 'Пользователь с таким email или телефоном уже существует.' });
@@ -117,36 +131,45 @@ export function createApp(pool: Pool, options: { secureCookies?: boolean } = {})
 
   app.post('/api/v1/auth/login', async (request, response, next) => {
     const { email, password } = request.body ?? {};
-    if (!validEmail(email) || typeof password !== 'string' || password.length > 200) return response.status(400).json({ error: 'Неверный email или пароль.' });
+    if (!validEmail(email) || typeof password !== 'string' || password.length > 200) {
+      await auditBestEffort(pool, { action: 'LOGIN_FAILED', status: 'FAILURE', details: { reason: 'invalid_input' } }, request.ip, options.auditPublisher);
+      return response.status(400).json({ error: 'Неверный email или пароль.' });
+    }
     try {
       const { rows } = await pool.query<UserRow & { password_hash: string | null }>(
         'SELECT user_id, name, email, phone, address, role, password_hash FROM users WHERE lower(email) = lower($1)', [email.trim()],
       );
-      if (!rows[0]?.password_hash || !(await verifyPassword(password, rows[0].password_hash))) return response.status(401).json({ error: 'Неверный email или пароль.' });
+      if (!rows[0]?.password_hash || !(await verifyPassword(password, rows[0].password_hash))) {
+        await auditBestEffort(pool, { userId: rows[0]?.user_id ?? null, action: 'LOGIN_FAILED', entityType: 'user', entityId: rows[0]?.user_id ?? null, status: 'FAILURE', details: { reason: 'invalid_credentials' } }, request.ip, options.auditPublisher);
+        return response.status(401).json({ error: 'Неверный email или пароль.' });
+      }
       await issueSession(pool, rows[0], response, options.secureCookies ?? false);
+      await auditBestEffort(pool, { userId: rows[0].user_id, action: 'LOGIN_SUCCESS', entityType: 'user', entityId: rows[0].user_id, status: 'SUCCESS' }, request.ip, options.auditPublisher);
       return response.json({ user: publicUser(rows[0]) });
     } catch (error) { return next(error); }
   });
 
   app.get('/api/v1/auth/me', async (request, response, next) => {
     try {
-      const user = await sessionUser(pool, cookieValue(request.headers.cookie, COOKIE));
+      const user = await sessionUserFromToken(pool, cookieValue(request.headers.cookie, SESSION_COOKIE_NAME));
       return user ? response.json({ user: publicUser(user) }) : response.status(401).json({ error: 'Требуется вход.' });
     } catch (error) { return next(error); }
   });
 
   app.post('/api/v1/auth/logout', async (request, response, next) => {
     try {
-      const token = cookieValue(request.headers.cookie, COOKIE);
+      const token = cookieValue(request.headers.cookie, SESSION_COOKIE_NAME);
+      const user = await sessionUserFromToken(pool, token);
       if (token) await pool.query('DELETE FROM user_sessions WHERE token_hash = $1', [tokenHash(token)]);
-      response.setHeader('Set-Cookie', `${COOKIE}=; ${cookieOptions(options.secureCookies ?? false, 0)}`);
+      if (user) await auditBestEffort(pool, { userId: user.user_id, action: 'LOGOUT', entityType: 'user', entityId: user.user_id, status: 'SUCCESS' }, request.ip, options.auditPublisher);
+      response.setHeader('Set-Cookie', `${SESSION_COOKIE_NAME}=; ${cookieOptions(options.secureCookies ?? false, 0)}`);
       return response.status(204).end();
     } catch (error) { return next(error); }
   });
 
   app.patch('/api/v1/profile', async (request, response, next) => {
     try {
-      const current = await sessionUser(pool, cookieValue(request.headers.cookie, COOKIE));
+      const current = await sessionUserFromToken(pool, cookieValue(request.headers.cookie, SESSION_COOKIE_NAME));
       if (!current) return response.status(401).json({ error: 'Требуется вход.' });
       const { name, phone, address } = request.body ?? {};
       if (typeof name !== 'string' || !name.trim() || name.trim().length > 100 || typeof phone !== 'string' || !phone.trim() || phone.trim().length > 20 ||
@@ -166,10 +189,13 @@ export function createApp(pool: Pool, options: { secureCookies?: boolean } = {})
   app.post('/api/v1/orders', async (request, response, next) => {
     let client: PoolClient | null = null;
     let transactionOpen = false;
+    let orderUserId: number | null = null;
+    let pendingAudit: Awaited<ReturnType<typeof insertAuditLog>> | null = null;
     try {
-      const current = await sessionUser(pool, cookieValue(request.headers.cookie, COOKIE));
+      const current = await sessionUserFromToken(pool, cookieValue(request.headers.cookie, SESSION_COOKIE_NAME));
       if (!current) return response.status(401).json({ error: 'Требуется вход.' });
       if (current.role !== 'user') return response.status(403).json({ error: 'Оформление заказа доступно только покупателям.' });
+      orderUserId = current.user_id;
       const { items, shipping, paymentMethod } = request.body ?? {};
       if (!Array.isArray(items) || items.length < 1 || items.length > 50 ||
           items.some((line: unknown) => !line || typeof line !== 'object' ||
@@ -220,18 +246,27 @@ export function createApp(pool: Pool, options: { secureCookies?: boolean } = {})
         `INSERT INTO payments (order_id, payment_date, amount, payment_method, status)
          VALUES ($1, NOW(), $2, $3, 'Pending')`, [order.order_id, total, PAYMENT_METHODS[paymentMethod]],
       );
+      pendingAudit = await insertAuditLog(client, {
+        userId: current.user_id, action: 'ORDER_CREATED', entityType: 'order', entityId: order.order_id,
+        status: 'SUCCESS', details: { item_count: sortedItems.length }, ipAddress: request.ip,
+      });
       await client.query('COMMIT');
       transactionOpen = false;
+      publishAuditLog(options.auditPublisher, pendingAudit);
       return response.status(201).json({ order: { ...order, total_amount: Number(order.total_amount) } });
     } catch (error) {
       if (client && transactionOpen) await client.query('ROLLBACK').catch(() => undefined);
+      if (orderUserId !== null) await auditBestEffort(pool, {
+        userId: orderUserId, action: 'ORDER_CREATE_FAILED', entityType: 'order', status: 'FAILURE',
+        details: { reason: error instanceof ApiError ? `http_${error.status}` : 'request_failed' },
+      }, request.ip, options.auditPublisher);
       return next(error);
     } finally { client?.release(); }
   });
 
   app.get('/api/v1/orders', async (request, response, next) => {
     try {
-      const current = await sessionUser(pool, cookieValue(request.headers.cookie, COOKIE));
+      const current = await sessionUserFromToken(pool, cookieValue(request.headers.cookie, SESSION_COOKIE_NAME));
       if (!current) return response.status(401).json({ error: 'Требуется вход.' });
       const { rows } = await pool.query(
         `SELECT order_id, user_id, order_date, status, total_amount::float8 AS total_amount
@@ -262,7 +297,7 @@ export function createApp(pool: Pool, options: { secureCookies?: boolean } = {})
     const orderId = positiveInt(request.params.orderId, 1, MAX_DATABASE_ID);
     if (orderId === null) return response.status(400).json({ error: 'Invalid order id' });
     try {
-      const current = await sessionUser(pool, cookieValue(request.headers.cookie, COOKIE));
+      const current = await sessionUserFromToken(pool, cookieValue(request.headers.cookie, SESSION_COOKIE_NAME));
       if (!current) return response.status(401).json({ error: 'Требуется вход.' });
       const { rows } = await pool.query(
         `SELECT o.order_id, o.user_id, o.order_date, o.status, o.total_amount::float8 AS total_amount,
@@ -289,11 +324,114 @@ export function createApp(pool: Pool, options: { secureCookies?: boolean } = {})
     } catch (error) { return next(error); }
   });
 
+  app.get('/api/v1/admin/logs', async (request, response, next) => {
+    try {
+      const admin = await sessionUserFromToken(pool, cookieValue(request.headers.cookie, SESSION_COOKIE_NAME));
+      if (!admin) {
+        await auditBestEffort(pool, { action: 'ADMIN_LOGS_ACCESS_DENIED', status: 'FAILURE', details: { reason: 'unauthenticated' } }, request.ip, options.auditPublisher);
+        return response.status(401).json({ error: 'Требуется вход.' });
+      }
+      if (admin.role !== 'admin') {
+        await auditBestEffort(pool, { userId: admin.user_id, action: 'ADMIN_LOGS_ACCESS_DENIED', status: 'FAILURE', details: { reason: 'insufficient_role' } }, request.ip, options.auditPublisher);
+        return response.status(403).json({ error: 'Недостаточно прав.' });
+      }
+
+      const allowedQueryKeys = new Set(['page', 'pageSize', 'action', 'status', 'userId', 'from', 'to', 'q']);
+      if (Object.keys(request.query).some((key) => !allowedQueryKeys.has(key)) ||
+          ['action', 'status', 'userId', 'from', 'to', 'q'].some((key) => request.query[key] !== undefined && typeof request.query[key] !== 'string')) {
+        return response.status(400).json({ error: 'Некорректные параметры фильтра или пагинации.' });
+      }
+      const page = positiveInt(request.query.page, 1, 1_000_000);
+      const pageSize = positiveInt(request.query.pageSize, 25, 100);
+      const action = typeof request.query.action === 'string' ? request.query.action : undefined;
+      const status = typeof request.query.status === 'string' ? request.query.status : undefined;
+      const rawUserId = typeof request.query.userId === 'string' ? request.query.userId : undefined;
+      const userId = rawUserId === undefined ? undefined : positiveInt(rawUserId, 1, MAX_DATABASE_ID);
+      const from = typeof request.query.from === 'string' ? request.query.from : undefined;
+      const to = typeof request.query.to === 'string' ? request.query.to : undefined;
+      const q = typeof request.query.q === 'string' ? request.query.q.trim() : undefined;
+      const validDate = (value: string | undefined) => {
+        if (value === undefined) return true;
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+        const date = new Date(`${value}T00:00:00Z`);
+        return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
+      };
+      if (page === null || pageSize === null || (rawUserId !== undefined && userId === null) ||
+          (action !== undefined && !/^[A-Z][A-Z0-9_]{0,63}$/.test(action)) ||
+          (status !== undefined && status !== 'SUCCESS' && status !== 'FAILURE') ||
+          !validDate(from) || !validDate(to) || (from && to && from > to) ||
+          (request.query.q !== undefined && (q === undefined || q.length > 80))) {
+        return response.status(400).json({ error: 'Некорректные параметры фильтра или пагинации.' });
+      }
+
+      const values: unknown[] = [];
+      const filters: string[] = [];
+      const add = (value: unknown, sql: (placeholder: string) => string) => {
+        values.push(value);
+        filters.push(sql(`$${values.length}`));
+      };
+      if (action !== undefined) add(action, (p) => `action = ${p}`);
+      if (status !== undefined) add(status, (p) => `status = ${p}`);
+      if (userId !== undefined) add(userId, (p) => `user_id = ${p}`);
+      if (from !== undefined) add(from, (p) => `created_at >= ${p}::date`);
+      if (to !== undefined) add(to, (p) => `created_at < (${p}::date + INTERVAL '1 day')`);
+      if (q) {
+        values.push(`%${q}%`);
+        const p = `$${values.length}`;
+        filters.push(`(action ILIKE ${p} OR COALESCE(entity_type, '') ILIKE ${p} OR COALESCE(user_id::text, '') ILIKE ${p} OR COALESCE(entity_id::text, '') ILIKE ${p})`);
+      }
+      const where = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
+      const [counts, logs] = await Promise.all([
+        pool.query(`SELECT COUNT(*)::int AS total,
+                           COUNT(*) FILTER (WHERE status='SUCCESS')::int AS successful,
+                           COUNT(*) FILTER (WHERE status='FAILURE')::int AS failed
+                    FROM audit_logs ${where}`, values),
+        pool.query(
+          `SELECT log_id::text AS log_id, user_id, action, entity_type, entity_id, status, details,
+                  ip_address::text AS ip_address, created_at
+           FROM audit_logs ${where} ORDER BY created_at DESC, log_id DESC
+           LIMIT $${values.length + 1} OFFSET $${values.length + 2}`,
+          [...values, pageSize, (page - 1) * pageSize],
+        ),
+      ]);
+      const stats = counts.rows[0] ?? { total: 0, successful: 0, failed: 0 };
+      return response.json({ logs: logs.rows, page, pageSize, ...stats, totalPages: Math.ceil(stats.total / pageSize) });
+    } catch (error) { return next(error); }
+  });
+
+  app.get('/api/v1/admin/logs/:logId', async (request, response, next) => {
+    const logId = positiveBigIntId(request.params.logId);
+    if (logId === null) return response.status(400).json({ error: 'Некорректный ID записи.' });
+    try {
+      const admin = await sessionUserFromToken(pool, cookieValue(request.headers.cookie, SESSION_COOKIE_NAME));
+      if (!admin) {
+        await auditBestEffort(pool, { action: 'ADMIN_LOGS_ACCESS_DENIED', status: 'FAILURE', details: { reason: 'unauthenticated' } }, request.ip, options.auditPublisher);
+        return response.status(401).json({ error: 'Требуется вход.' });
+      }
+      if (admin.role !== 'admin') {
+        await auditBestEffort(pool, { userId: admin.user_id, action: 'ADMIN_LOGS_ACCESS_DENIED', status: 'FAILURE', details: { reason: 'insufficient_role' } }, request.ip, options.auditPublisher);
+        return response.status(403).json({ error: 'Недостаточно прав.' });
+      }
+      const { rows } = await pool.query(
+        `SELECT log_id::text AS log_id, user_id, action, entity_type, entity_id, status, details,
+                ip_address::text AS ip_address, created_at
+         FROM audit_logs WHERE log_id=$1`, [logId],
+      );
+      return rows[0] ? response.json({ log: rows[0] }) : response.status(404).json({ error: 'Запись не найдена.' });
+    } catch (error) { return next(error); }
+  });
+
   app.get('/api/v1/admin/orders', async (request, response, next) => {
     try {
-      const admin = await sessionUser(pool, cookieValue(request.headers.cookie, COOKIE));
-      if (!admin) return response.status(401).json({ error: 'Требуется вход.' });
-      if (admin.role !== 'admin') return response.status(403).json({ error: 'Недостаточно прав.' });
+      const admin = await sessionUserFromToken(pool, cookieValue(request.headers.cookie, SESSION_COOKIE_NAME));
+      if (!admin) {
+        await auditBestEffort(pool, { action: 'ADMIN_ORDERS_ACCESS_DENIED', status: 'FAILURE', details: { reason: 'unauthenticated' } }, request.ip, options.auditPublisher);
+        return response.status(401).json({ error: 'Требуется вход.' });
+      }
+      if (admin.role !== 'admin') {
+        await auditBestEffort(pool, { userId: admin.user_id, action: 'ADMIN_ORDERS_ACCESS_DENIED', status: 'FAILURE', details: { reason: 'insufficient_role' } }, request.ip, options.auditPublisher);
+        return response.status(403).json({ error: 'Недостаточно прав.' });
+      }
       const { rows } = await pool.query(
         `SELECT o.order_id, o.user_id, o.order_date, o.status, o.total_amount::float8 AS total_amount,
                 o.recipient_name, o.recipient_phone, o.delivery_city, o.delivery_address,
@@ -324,11 +462,74 @@ export function createApp(pool: Pool, options: { secureCookies?: boolean } = {})
     } catch (error) { return next(error); }
   });
 
+  app.patch('/api/v1/admin/orders/:orderId/status', async (request, response, next) => {
+    const orderId = positiveInt(request.params.orderId, 1, MAX_DATABASE_ID);
+    if (orderId === null) return response.status(400).json({ error: 'Некорректный ID заказа.' });
+    let adminId: number | null = null;
+    let client: PoolClient | null = null;
+    let transactionOpen = false;
+    let pendingOrderStatusAudit: Awaited<ReturnType<typeof insertAuditLog>> | null = null;
+    try {
+      const admin = await sessionUserFromToken(pool, cookieValue(request.headers.cookie, SESSION_COOKIE_NAME));
+      if (!admin) {
+        await auditBestEffort(pool, { action: 'ORDER_STATUS_CHANGED', entityType: 'order', entityId: orderId, status: 'FAILURE', details: { reason: 'unauthenticated' } }, request.ip, options.auditPublisher);
+        return response.status(401).json({ error: 'Требуется вход.' });
+      }
+      if (admin.role !== 'admin') {
+        await auditBestEffort(pool, { userId: admin.user_id, action: 'ORDER_STATUS_CHANGED', entityType: 'order', entityId: orderId, status: 'FAILURE', details: { reason: 'insufficient_role' } }, request.ip, options.auditPublisher);
+        return response.status(403).json({ error: 'Недостаточно прав.' });
+      }
+      adminId = admin.user_id;
+      const status = request.body?.status;
+      if (typeof status !== 'string' || !ORDER_STATUSES.has(status)) {
+        await auditBestEffort(pool, { userId: adminId, action: 'ORDER_STATUS_CHANGED', entityType: 'order', entityId: orderId, status: 'FAILURE', details: { reason: 'invalid_status' } }, request.ip, options.auditPublisher);
+        return response.status(400).json({ error: 'Недопустимый статус заказа.' });
+      }
+
+      client = await pool.connect();
+      await client.query('BEGIN');
+      transactionOpen = true;
+      const current = await client.query<{ status: string }>('SELECT status FROM orders WHERE order_id=$1 FOR UPDATE', [orderId]);
+      if (!current.rows[0]) {
+        await client.query('ROLLBACK');
+        transactionOpen = false;
+        await auditBestEffort(pool, { userId: adminId, action: 'ORDER_STATUS_CHANGED', entityType: 'order', entityId: orderId, status: 'FAILURE', details: { reason: 'not_found' } }, request.ip, options.auditPublisher);
+        return response.status(404).json({ error: 'Заказ не найден.' });
+      }
+      if (current.rows[0].status === status) {
+        await client.query('COMMIT');
+        transactionOpen = false;
+        return response.json({ order: { order_id: orderId, status } });
+      }
+      const updated = await client.query<{ order_id: number; status: string }>(
+        'UPDATE orders SET status=$1 WHERE order_id=$2 RETURNING order_id, status', [status, orderId],
+      );
+      pendingOrderStatusAudit = await insertAuditLog(client, {
+        userId: adminId, action: 'ORDER_STATUS_CHANGED', entityType: 'order', entityId: orderId,
+        status: 'SUCCESS', details: { from: current.rows[0].status, to: status }, ipAddress: request.ip,
+      });
+      await client.query('COMMIT');
+      transactionOpen = false;
+      publishAuditLog(options.auditPublisher, pendingOrderStatusAudit);
+      return response.json({ order: updated.rows[0] });
+    } catch (error) {
+      if (client && transactionOpen) await client.query('ROLLBACK').catch(() => undefined);
+      if (adminId !== null) await auditBestEffort(pool, { userId: adminId, action: 'ORDER_STATUS_CHANGED', entityType: 'order', entityId: orderId, status: 'FAILURE', details: { reason: 'request_failed' } }, request.ip, options.auditPublisher);
+      return next(error);
+    } finally { client?.release(); }
+  });
+
   app.get('/api/v1/admin/products', async (request, response, next) => {
     try {
-      const admin = await sessionUser(pool, cookieValue(request.headers.cookie, COOKIE));
-      if (!admin) return response.status(401).json({ error: 'Требуется вход.' });
-      if (admin.role !== 'admin') return response.status(403).json({ error: 'Недостаточно прав.' });
+      const admin = await sessionUserFromToken(pool, cookieValue(request.headers.cookie, SESSION_COOKIE_NAME));
+      if (!admin) {
+        await auditBestEffort(pool, { action: 'PRODUCTS_ACCESS_DENIED', status: 'FAILURE', details: { reason: 'unauthenticated' } }, request.ip, options.auditPublisher);
+        return response.status(401).json({ error: 'Требуется вход.' });
+      }
+      if (admin.role !== 'admin') {
+        await auditBestEffort(pool, { userId: admin.user_id, action: 'PRODUCTS_ACCESS_DENIED', status: 'FAILURE', details: { reason: 'insufficient_role' } }, request.ip, options.auditPublisher);
+        return response.status(403).json({ error: 'Недостаточно прав.' });
+      }
       const { rows } = await pool.query(
         `SELECT p.product_id, p.name, p.description, p.price::float8 AS price, p.stock_quantity, p.category_id
          FROM products p ORDER BY p.product_id`,
@@ -338,20 +539,37 @@ export function createApp(pool: Pool, options: { secureCookies?: boolean } = {})
   });
 
   app.post('/api/v1/admin/products', async (request, response, next) => {
+    let actorId: number | null = null;
     try {
-      const admin = await sessionUser(pool, cookieValue(request.headers.cookie, COOKIE));
-      if (!admin) return response.status(401).json({ error: 'Требуется вход.' });
-      if (admin.role !== 'admin') return response.status(403).json({ error: 'Недостаточно прав.' });
+      const admin = await sessionUserFromToken(pool, cookieValue(request.headers.cookie, SESSION_COOKIE_NAME));
+      if (!admin) {
+        await auditBestEffort(pool, { action: 'PRODUCT_CREATED', status: 'FAILURE', details: { reason: 'unauthenticated' } }, request.ip, options.auditPublisher);
+        return response.status(401).json({ error: 'Требуется вход.' });
+      }
+      if (admin.role !== 'admin') {
+        await auditBestEffort(pool, { userId: admin.user_id, action: 'PRODUCT_CREATED', status: 'FAILURE', details: { reason: 'insufficient_role' } }, request.ip, options.auditPublisher);
+        return response.status(403).json({ error: 'Недостаточно прав.' });
+      }
+      actorId = admin.user_id;
       const product = validateProduct(request.body);
-      if (!product) return response.status(400).json({ error: 'Проверьте название, описание, цену, остаток и категорию.' });
-      const { rows } = await pool.query(
-        `INSERT INTO products (name, description, price, stock_quantity, category_id)
-         VALUES ($1, $2, $3, $4, $5)
-         RETURNING product_id, name, description, price::float8 AS price, stock_quantity, category_id`,
-        [product.name, product.description, product.price.toFixed(2), product.stock_quantity, product.category_id],
-      );
-      return response.status(201).json({ product: rows[0] });
+      if (!product) {
+        await auditBestEffort(pool, { userId: actorId, action: 'PRODUCT_CREATED', status: 'FAILURE', details: { reason: 'invalid_input' } }, request.ip, options.auditPublisher);
+        return response.status(400).json({ error: 'Проверьте название, описание, цену, остаток и категорию.' });
+      }
+      const result = await inTransaction(pool, async (client) => {
+        const { rows } = await client.query(
+          `INSERT INTO products (name, description, price, stock_quantity, category_id)
+           VALUES ($1, $2, $3, $4, $5)
+           RETURNING product_id, name, description, price::float8 AS price, stock_quantity, category_id`,
+          [product.name, product.description, product.price.toFixed(2), product.stock_quantity, product.category_id],
+        );
+        const log = await insertAuditLog(client, { userId: actorId, action: 'PRODUCT_CREATED', entityType: 'product', entityId: rows[0].product_id, status: 'SUCCESS', ipAddress: request.ip });
+        return { product: rows[0], log };
+      });
+      publishAuditLog(options.auditPublisher, result.log);
+      return response.status(201).json({ product: result.product });
     } catch (error) {
+      if (actorId !== null) await auditBestEffort(pool, { userId: actorId, action: 'PRODUCT_CREATED', status: 'FAILURE', details: { reason: 'request_failed' } }, request.ip, options.auditPublisher);
       if ((error as { code?: string }).code === '23503') return response.status(400).json({ error: 'Выбранная категория не существует.' });
       return next(error);
     }
@@ -360,21 +578,42 @@ export function createApp(pool: Pool, options: { secureCookies?: boolean } = {})
   app.patch('/api/v1/admin/products/:productId', async (request, response, next) => {
     const productId = positiveInt(request.params.productId, 1, MAX_DATABASE_ID);
     if (productId === null) return response.status(400).json({ error: 'Invalid product id' });
+    let actorId: number | null = null;
     try {
-      const admin = await sessionUser(pool, cookieValue(request.headers.cookie, COOKIE));
-      if (!admin) return response.status(401).json({ error: 'Требуется вход.' });
-      if (admin.role !== 'admin') return response.status(403).json({ error: 'Недостаточно прав.' });
+      const admin = await sessionUserFromToken(pool, cookieValue(request.headers.cookie, SESSION_COOKIE_NAME));
+      if (!admin) {
+        await auditBestEffort(pool, { action: 'PRODUCT_UPDATED', entityType: 'product', entityId: productId, status: 'FAILURE', details: { reason: 'unauthenticated' } }, request.ip, options.auditPublisher);
+        return response.status(401).json({ error: 'Требуется вход.' });
+      }
+      if (admin.role !== 'admin') {
+        await auditBestEffort(pool, { userId: admin.user_id, action: 'PRODUCT_UPDATED', entityType: 'product', entityId: productId, status: 'FAILURE', details: { reason: 'insufficient_role' } }, request.ip, options.auditPublisher);
+        return response.status(403).json({ error: 'Недостаточно прав.' });
+      }
+      actorId = admin.user_id;
       const product = validateProduct(request.body);
-      if (!product) return response.status(400).json({ error: 'Проверьте название, описание, цену, остаток и категорию.' });
-      const { rows } = await pool.query(
-        `UPDATE products SET name=$1, description=$2, price=$3, stock_quantity=$4, category_id=$5
-         WHERE product_id=$6
-         RETURNING product_id, name, description, price::float8 AS price, stock_quantity, category_id`,
-        [product.name, product.description, product.price.toFixed(2), product.stock_quantity, product.category_id, productId],
-      );
-      if (!rows[0]) return response.status(404).json({ error: 'Товар не найден.' });
-      return response.json({ product: rows[0] });
+      if (!product) {
+        await auditBestEffort(pool, { userId: actorId, action: 'PRODUCT_UPDATED', entityType: 'product', entityId: productId, status: 'FAILURE', details: { reason: 'invalid_input' } }, request.ip, options.auditPublisher);
+        return response.status(400).json({ error: 'Проверьте название, описание, цену, остаток и категорию.' });
+      }
+      const result = await inTransaction(pool, async (client) => {
+        const { rows } = await client.query(
+          `UPDATE products SET name=$1, description=$2, price=$3, stock_quantity=$4, category_id=$5
+           WHERE product_id=$6
+           RETURNING product_id, name, description, price::float8 AS price, stock_quantity, category_id`,
+          [product.name, product.description, product.price.toFixed(2), product.stock_quantity, product.category_id, productId],
+        );
+        if (!rows[0]) return { product: null, log: null };
+        const log = await insertAuditLog(client, { userId: actorId, action: 'PRODUCT_UPDATED', entityType: 'product', entityId: productId, status: 'SUCCESS', ipAddress: request.ip });
+        return { product: rows[0], log };
+      });
+      if (!result.product) {
+        await auditBestEffort(pool, { userId: actorId, action: 'PRODUCT_UPDATED', entityType: 'product', entityId: productId, status: 'FAILURE', details: { reason: 'not_found' } }, request.ip, options.auditPublisher);
+        return response.status(404).json({ error: 'Товар не найден.' });
+      }
+      if (result.log) publishAuditLog(options.auditPublisher, result.log);
+      return response.json({ product: result.product });
     } catch (error) {
+      if (actorId !== null) await auditBestEffort(pool, { userId: actorId, action: 'PRODUCT_UPDATED', entityType: 'product', entityId: productId, status: 'FAILURE', details: { reason: 'request_failed' } }, request.ip, options.auditPublisher);
       if ((error as { code?: string }).code === '23503') return response.status(400).json({ error: 'Выбранная категория не существует.' });
       return next(error);
     }
@@ -383,14 +622,32 @@ export function createApp(pool: Pool, options: { secureCookies?: boolean } = {})
   app.delete('/api/v1/admin/products/:productId', async (request, response, next) => {
     const productId = positiveInt(request.params.productId, 1, MAX_DATABASE_ID);
     if (productId === null) return response.status(400).json({ error: 'Invalid product id' });
+    let actorId: number | null = null;
     try {
-      const admin = await sessionUser(pool, cookieValue(request.headers.cookie, COOKIE));
-      if (!admin) return response.status(401).json({ error: 'Требуется вход.' });
-      if (admin.role !== 'admin') return response.status(403).json({ error: 'Недостаточно прав.' });
-      const { rows } = await pool.query('DELETE FROM products WHERE product_id=$1 RETURNING product_id', [productId]);
-      if (!rows[0]) return response.status(404).json({ error: 'Товар не найден.' });
+      const admin = await sessionUserFromToken(pool, cookieValue(request.headers.cookie, SESSION_COOKIE_NAME));
+      if (!admin) {
+        await auditBestEffort(pool, { action: 'PRODUCT_DELETED', entityType: 'product', entityId: productId, status: 'FAILURE', details: { reason: 'unauthenticated' } }, request.ip, options.auditPublisher);
+        return response.status(401).json({ error: 'Требуется вход.' });
+      }
+      if (admin.role !== 'admin') {
+        await auditBestEffort(pool, { userId: admin.user_id, action: 'PRODUCT_DELETED', entityType: 'product', entityId: productId, status: 'FAILURE', details: { reason: 'insufficient_role' } }, request.ip, options.auditPublisher);
+        return response.status(403).json({ error: 'Недостаточно прав.' });
+      }
+      actorId = admin.user_id;
+      const result = await inTransaction(pool, async (client) => {
+        const { rows } = await client.query('DELETE FROM products WHERE product_id=$1 RETURNING product_id', [productId]);
+        if (!rows[0]) return { productId: null, log: null };
+        const log = await insertAuditLog(client, { userId: actorId, action: 'PRODUCT_DELETED', entityType: 'product', entityId: productId, status: 'SUCCESS', ipAddress: request.ip });
+        return { productId: rows[0].product_id as number, log };
+      });
+      if (result.productId === null) {
+        await auditBestEffort(pool, { userId: actorId, action: 'PRODUCT_DELETED', entityType: 'product', entityId: productId, status: 'FAILURE', details: { reason: 'not_found' } }, request.ip, options.auditPublisher);
+        return response.status(404).json({ error: 'Товар не найден.' });
+      }
+      if (result.log) publishAuditLog(options.auditPublisher, result.log);
       return response.status(204).end();
     } catch (error) {
+      if (actorId !== null) await auditBestEffort(pool, { userId: actorId, action: 'PRODUCT_DELETED', entityType: 'product', entityId: productId, status: 'FAILURE', details: { reason: 'request_failed' } }, request.ip, options.auditPublisher);
       if ((error as { code?: string }).code === '23503') return response.status(409).json({ error: 'Нельзя удалить товар: на него ссылаются заказы или отзывы.' });
       return next(error);
     }
@@ -481,10 +738,10 @@ export function createApp(pool: Pool, options: { secureCookies?: boolean } = {})
 async function issueSession(pool: Pool, user: UserRow, response: express.Response, secure: boolean) {
   const token = randomBytes(32).toString('base64url');
   await pool.query('INSERT INTO user_sessions (user_id, token_hash, expires_at) VALUES ($1, $2, NOW() + INTERVAL \'14 days\')', [user.user_id, tokenHash(token)]);
-  response.setHeader('Set-Cookie', `${COOKIE}=${token}; ${cookieOptions(secure)}`);
+  response.setHeader('Set-Cookie', `${SESSION_COOKIE_NAME}=${token}; ${cookieOptions(secure)}`);
 }
 
-async function sessionUser(pool: Pool, token: string | undefined): Promise<UserRow | null> {
+export async function sessionUserFromToken(pool: Pool, token: string | undefined): Promise<SessionUser | null> {
   if (!token || !/^[A-Za-z\d_-]{40,50}$/.test(token)) return null;
   const { rows } = await pool.query<UserRow>(
     `SELECT u.user_id, u.name, u.email, u.phone, u.address, u.role
@@ -492,6 +749,38 @@ async function sessionUser(pool: Pool, token: string | undefined): Promise<UserR
      WHERE s.token_hash=$1 AND s.expires_at > NOW()`, [tokenHash(token)],
   );
   return rows[0] ?? null;
+}
+
+async function auditBestEffort(
+  pool: Pool,
+  event: Omit<AuditEventInput, 'ipAddress'>,
+  ipAddress?: string,
+  publisher?: AuditPublisher,
+): Promise<void> {
+  try {
+    const log = await insertAuditLog(pool, { ...event, ipAddress: ipAddress ?? null });
+    publishAuditLog(publisher, log);
+  } catch (error) {
+    console.error('Audit log write failed:', error instanceof Error ? error.message : 'Unknown error');
+  }
+}
+
+async function inTransaction<T>(pool: Pool, operation: (client: PoolClient) => Promise<T>): Promise<T> {
+  const client = await pool.connect();
+  let open = false;
+  try {
+    await client.query('BEGIN');
+    open = true;
+    const result = await operation(client);
+    await client.query('COMMIT');
+    open = false;
+    return result;
+  } catch (error) {
+    if (open) await client.query('ROLLBACK').catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 async function listProducts(

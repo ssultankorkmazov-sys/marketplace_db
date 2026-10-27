@@ -25,4 +25,22 @@ describe('configured production API URL', () => {
     expect(fetchMock.mock.calls[1][1]).toMatchObject({ method: 'POST', credentials: 'include' })
     expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toMatchObject({ email: user.email, password: 'test-password' })
   })
+
+  it('requests paginated audit logs with filters and credentials', async () => {
+    vi.stubEnv('VITE_API_URL', 'https://marketkz-api.onrender.com/api/v1')
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ logs: [], page: 2, pageSize: 10, total: 0, successful: 0, failed: 0, totalPages: 0 }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const { adminApi } = await import('../src/api/client')
+
+    await adminApi.logs({ page: 2, pageSize: 10, action: 'ORDER_CREATED', status: 'SUCCESS', userId: 8, from: '2026-10-01', to: '2026-10-31', q: '42' })
+
+    expect(fetchMock.mock.calls[0][0]).toBe('https://marketkz-api.onrender.com/api/v1/admin/logs?page=2&pageSize=10&action=ORDER_CREATED&status=SUCCESS&userId=8&from=2026-10-01&to=2026-10-31&q=42')
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ credentials: 'include' })
+  })
+
+  it('creates a secure production WebSocket URL', async () => {
+    vi.stubEnv('VITE_API_URL', 'https://marketkz-api.onrender.com/api/v1')
+    const { auditWebSocketUrl } = await import('../src/api/client')
+    expect(auditWebSocketUrl()).toBe('wss://marketkz-api.onrender.com/api/v1/admin/logs/stream')
+  })
 })

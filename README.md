@@ -14,7 +14,15 @@ The backend does not import or reset the database on startup. The SQL seed file 
 
 ## Production hosting
 
-The GitHub Pages workflow builds the frontend with `VITE_API_URL=https://marketkz-api.onrender.com/api/v1`. The API allows credentialed browser requests from the Pages origin `https://ssultankorkmazov-sys.github.io` and the local development origins `http://localhost:5173` and `http://127.0.0.1:5173`. Keep `NODE_ENV=production` on the Render service so its cross-site session cookie is sent with `SameSite=None; Secure`.
+The GitHub Pages workflow builds the frontend with `VITE_API_URL=https://marketkz-api.onrender.com/api/v1`. The API allows credentialed browser requests from the Pages origin `https://ssultankorkmazov-sys.github.io`; local origins `http://localhost:5173` and `http://127.0.0.1:5173` are allowed only outside production. Keep `NODE_ENV=production` on the Render service so its cross-site session cookie is sent with `SameSite=None; Secure`.
+
+## Audit log and live activity
+
+Apply additive migrations before using the audit page. The migration runner records completed files in `public.schema_migrations` and applies each recorded migration only once. On a database created before the tracker, it records migrations 001–003 as already applied only when their complete expected schema is present; a partial or incompatible schema causes the transaction to stop for manual review. This runner is restricted to the local PostgreSQL database named exactly `market_db_test`; it verifies `current_database()` on the active connection and refuses every other database. Run it with `npm --prefix server run db:migrate` only after explicitly setting `DATABASE_URL` to that local test database. It is not a production/shared-database migration mechanism; any such migration needs a separately reviewed and approved procedure. The migrations add the tracker and `audit_logs`/indexes without dropping or replacing existing tables or rows.
+
+Administrators can open **Журнал активности** in the admin navigation. The REST endpoints are `GET /api/v1/admin/logs` and `GET /api/v1/admin/logs/:logId`; both require a valid administrator session. Filters include `page`, `pageSize`, `action`, `status`, `userId`, `from`, `to`, and `q`. There are no log mutation endpoints. The live feed is `wss://marketkz-api.onrender.com/api/v1/admin/logs/stream` in production and authenticates from the existing HttpOnly session cookie. While connected, the server revalidates the session and admin role every 15 seconds and closes the socket when either is no longer valid. If the socket disconnects, the UI reconnects with backoff and reloads the current page over REST.
+
+Render Web Services support WebSockets. Live broadcasts are held in the current backend process; if the Render service is scaled to multiple instances, clients and writes may land on different instances, so cross-instance events require a shared PostgreSQL notification or pub/sub layer. REST logs remain authoritative either way.
 
 ## Authentication
 

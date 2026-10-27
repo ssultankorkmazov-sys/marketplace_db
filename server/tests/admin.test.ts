@@ -11,8 +11,9 @@ const product = { product_id: 8, name: 'Camera', description: 'Digital camera', 
 const productInput = { name: product.name, description: product.description, price: product.price, stock_quantity: product.stock_quantity, category_id: product.category_id };
 
 function appFor(role: 'admin'|'user'|null = 'admin') {
-  const query = vi.fn(async (sql: string) => {
+  const query = vi.fn(async (sql: string, values?: unknown[]) => {
     if (sql.includes('FROM user_sessions')) return { rows: role ? [role === 'admin' ? admin : ordinaryUser] : [] };
+    if (sql.includes('INSERT INTO audit_logs')) return { rows: [{ log_id: 1, user_id: values?.[0] ?? null, action: values?.[1], entity_type: values?.[2] ?? null, entity_id: values?.[3] ?? null, status: values?.[4], details: JSON.parse(String(values?.[5] ?? '{}')), ip_address: null, created_at: '2026-10-13T12:00:00Z' }] };
     if (sql.includes('SELECT p.product_id')) return { rows: [product] };
     if (sql.includes('INSERT INTO products')) return { rows: [product] };
     if (sql.includes('UPDATE products')) return { rows: [product] };
@@ -21,7 +22,7 @@ function appFor(role: 'admin'|'user'|null = 'admin') {
     if (sql.includes('FROM order_items i JOIN products')) return { rows: [] };
     return { rows: [] };
   });
-  return { app: createApp({ query } as unknown as Pool), query };
+  return { app: createApp({ query, connect: vi.fn().mockResolvedValue({ query, release: vi.fn() }) } as unknown as Pool), query };
 }
 
 describe('admin API', () => {
@@ -46,7 +47,7 @@ describe('admin API', () => {
       request(app).delete('/api/v1/admin/products/8'),
     ]);
     expect(responses.map((response) => response.status)).toEqual([401, 401, 401, 401, 401]);
-    expect(query.mock.calls.every(([sql]) => String(sql).includes('FROM user_sessions'))).toBe(true);
+    expect(query.mock.calls.filter(([sql]) => !String(sql).includes('INSERT INTO audit_logs')).every(([sql]) => String(sql).includes('FROM user_sessions'))).toBe(true);
   });
 
   it('denies every admin operation to an ordinary signed-in user', async () => {
@@ -57,16 +58,22 @@ describe('admin API', () => {
       request(app).delete('/api/v1/admin/products/8').set('Cookie', cookie),
     ]);
     expect(responses.map((response) => response.status)).toEqual([403, 403, 403, 403, 403]);
-    expect(query.mock.calls.every(([sql]) => String(sql).includes('FROM user_sessions'))).toBe(true);
+    expect(query.mock.calls.filter(([sql]) => !String(sql).includes('INSERT INTO audit_logs')).every(([sql]) => String(sql).includes('FROM user_sessions'))).toBe(true);
   });
 
   it('refuses to delete a product linked to an order or review', async () => {
-    const query = vi.fn(async (sql: string) => {
+    const query = vi.fn(async (sql: string, values?: unknown[]) => {
       if (sql.includes('FROM user_sessions')) return { rows: [admin] };
       if (sql.includes('DELETE FROM products')) throw Object.assign(new Error('foreign key violation'), { code: '23503' });
+      if (sql.includes('INSERT INTO audit_logs')) return { rows: [{ log_id: 1, user_id: values?.[0], action: values?.[1], entity_type: values?.[2], entity_id: values?.[3], status: values?.[4], details: JSON.parse(String(values?.[5])), ip_address: null, created_at: '2026-10-13T12:00:00Z' }] };
       return { rows: [] };
     });
-    const response = await request(createApp({ query } as unknown as Pool)).delete('/api/v1/admin/products/8').set('Cookie', cookie);
+    const clientQuery = vi.fn(async (sql: string, values?: unknown[]) => {
+      if (sql.includes('DELETE FROM products')) throw Object.assign(new Error('foreign key violation'), { code: '23503' });
+      return query(sql, values);
+    });
+    const pool = { query, connect: vi.fn().mockResolvedValue({ query: clientQuery, release: vi.fn() }) };
+    const response = await request(createApp(pool as unknown as Pool)).delete('/api/v1/admin/products/8').set('Cookie', cookie);
     expect(response.status).toBe(409);
     expect(response.body.error).toContain('заказы или отзывы');
   });

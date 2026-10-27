@@ -87,6 +87,40 @@ export const ordersApi = {
 }
 
 export interface AdminOrder { order: ApiOrder; user: Pick<AuthUser, 'user_id'|'name'|'email'|'phone'|'address'>; payment: ApiPayment | null; items: ApiOrderLine[] }
+export interface AuditLog {
+  log_id: string;
+  user_id: number | null;
+  action: string;
+  entity_type: string | null;
+  entity_id: number | null;
+  status: 'SUCCESS' | 'FAILURE';
+  details: Record<string, unknown>;
+  ip_address: string | null;
+  created_at: string;
+}
+export interface AuditLogFilters {
+  page?: number;
+  pageSize?: number;
+  action?: string;
+  status?: 'SUCCESS' | 'FAILURE';
+  userId?: number;
+  from?: string;
+  to?: string;
+  q?: string;
+}
+export interface AuditLogPage extends AuditLogFilters {
+  logs: AuditLog[];
+  total: number;
+  successful: number;
+  failed: number;
+  totalPages: number;
+}
+export function auditWebSocketUrl(): string {
+  const url = new URL(`${API_ROOT}/admin/logs/stream`, window.location.href);
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  return url.toString();
+}
+
 export const adminApi = {
   async products() { return (await request<{ products: Product[] }>('/admin/products')).products },
   async createProduct(product: Omit<Product, 'product_id'>) {
@@ -97,5 +131,18 @@ export const adminApi = {
   },
   async deleteProduct(id: number) { await request<void>(`/admin/products/${id}`, { method: 'DELETE' }) },
   async orders() { return (await request<{ orders: AdminOrder[] }>('/admin/orders')).orders },
+  async updateOrderStatus(id: number, status: string) {
+    return request<{ order: { order_id: number; status: string } }>(`/admin/orders/${id}/status`, { method: 'PATCH', body: JSON.stringify({ status }) });
+  },
+  async logs(filters: AuditLogFilters = {}) {
+    const params = new URLSearchParams();
+    for (const key of ['page', 'pageSize', 'action', 'status', 'userId', 'from', 'to', 'q'] as const) {
+      const value = filters[key];
+      if (value !== undefined && value !== '') params.set(key, String(value));
+    }
+    const query = params.toString();
+    return request<AuditLogPage>(`/admin/logs${query ? `?${query}` : ''}`);
+  },
+  async log(id: number) { return (await request<{ log: AuditLog }>(`/admin/logs/${id}`)).log },
 }
 

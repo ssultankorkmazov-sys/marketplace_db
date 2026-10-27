@@ -15,12 +15,14 @@ function setup(options: { stock?: number; missingProduct?: boolean } = {}) {
     calls.push({ sql, values });
     if (sql.includes('SELECT name, price::text')) return { rows: options.missingProduct ? [] : [{ ...product, stock_quantity: stock }], rowCount: 1 };
     if (sql.includes('INSERT INTO orders')) return { rows: [{ order_id: 91, user_id: user.user_id, order_date: '2026-10-13T12:00:00Z', status: 'Processing', total_amount: values?.[1] }], rowCount: 1 };
+    if (sql.includes('INSERT INTO audit_logs')) return { rows: [{ log_id: 700, user_id: values?.[0], action: values?.[1], entity_type: values?.[2], entity_id: values?.[3], status: values?.[4], details: JSON.parse(String(values?.[5])), ip_address: values?.[6], created_at: '2026-10-13T12:00:00Z' }], rowCount: 1 };
     if (sql.includes('UPDATE products')) return { rows: [], rowCount: 1 };
     return { rows: [], rowCount: 1 };
   });
   const client = { query: clientQuery, release: vi.fn() } as unknown as PoolClient;
   const poolQuery = vi.fn(async (sql: string, values?: unknown[]) => {
     if (sql.includes('FROM user_sessions')) return { rows: [user], rowCount: 1 };
+    if (sql.includes('INSERT INTO audit_logs')) return { rows: [{ log_id: 701, user_id: values?.[0], action: values?.[1], entity_type: values?.[2], entity_id: values?.[3], status: values?.[4], details: JSON.parse(String(values?.[5])), ip_address: values?.[6], created_at: '2026-10-13T12:00:00Z' }], rowCount: 1 };
     return { rows: [], rowCount: 0 };
   });
   const pool = { query: poolQuery, connect: vi.fn().mockResolvedValue(client) } as unknown as Pool;
@@ -42,6 +44,7 @@ describe('orders API', () => {
     expect(itemInsert.values).toEqual([91, 4, 2, '125.50']);
     expect(calls.find((call) => call.sql.includes('UPDATE products'))?.values).toEqual([2, 4]);
     expect(calls.find((call) => call.sql.includes('INSERT INTO payments'))?.values).toEqual([91, '251.00', 'Kaspi Pay']);
+    expect(calls.find((call) => call.sql.includes('INSERT INTO audit_logs'))?.values?.slice(0, 5)).toEqual([7, 'ORDER_CREATED', 'order', 91, 'SUCCESS']);
     expect(clientQuery).toHaveBeenCalled();
   });
 
