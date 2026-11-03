@@ -65,3 +65,17 @@ All routes below require a valid server session whose current database role is `
 - `POST /api/v1/admin/products` creates a validated product.
 - `PATCH /api/v1/admin/products/:productId` updates a validated product.
 - `DELETE /api/v1/admin/products/:productId` deletes an unreferenced product. PostgreSQL foreign keys protect products referenced by an order or review; those attempts return 409 without deleting related history.
+
+## Rule-based anomaly detection
+
+Apply additive migrations `004_anomaly_incidents.sql` and `005_anomaly_queue_dead_letter.sql` through an explicitly reviewed migration process before deploying this backend phase. The repository migration runner is deliberately restricted to the local `market_db_test` database; it must not be used for production. Migration 004 does not rewrite existing data or replay historical `audit_logs`; migration 005 adds only nullable error/dead-letter metadata. A trigger places future audit inserts in `anomaly_event_queue` in the same transaction. The worker processes each queued event transactionally, links evidence to audit log IDs, retries failures with exponential backoff up to five attempts, then records a redacted error summary and dead-letter timestamp. It uses a per-subject advisory lock plus a partial unique index to avoid duplicate active incidents. `/api/health/ready` reports HTTP 503 until catalog and all required anomaly schema objects, including the enabled trigger and exact function body, are available. PostgreSQL integration tests run with `npm --prefix server run test:integration` only when a local `TEST_DATABASE_URL` points to a database ending in `_test`; the anomaly integration test additionally requires migrations 004 and 005 to be applied there. Tests never apply migrations automatically.
+
+The initial thresholds default to five events: failed logins per known account in 120 seconds, authenticated administrative access denials per account in 120 seconds, and created orders per account in 300 seconds. Configure them with `ANOMALY_FAILED_LOGIN_THRESHOLD`, `ANOMALY_FAILED_LOGIN_WINDOW_SECONDS`, `ANOMALY_ADMIN_DENIED_THRESHOLD`, `ANOMALY_ADMIN_DENIED_WINDOW_SECONDS`, `ANOMALY_ORDER_THRESHOLD`, and `ANOMALY_ORDER_WINDOW_SECONDS`. `ANOMALY_POLL_INTERVAL_MS` defaults to 5000. Values are validated on startup. Risk scores are deterministic: base scores are 55, 65, and 50 for the three respective rules, plus 10 per event above threshold, capped at 100. Severity is MEDIUM 40–69, HIGH 70–89, CRITICAL 90–100 (LOW is reserved for future lower-scored detections). Recommendations are rule-based and require administrator judgment; no account or business action is taken automatically.
+
+Anomaly endpoints, all restricted to the existing administrator session and role:
+
+- `GET /api/v1/admin/anomalies` with optional `page`, `pageSize`, `severity`, `type`, `status`, `from`, and `to` filters, plus severity counts.
+- `GET /api/v1/admin/anomalies/:incidentId` for incident evidence and linked audit event IDs.
+- `PATCH /api/v1/admin/anomalies/:incidentId/status` accepts `INVESTIGATING`, `RESOLVED`, or `FALSE_POSITIVE`; terminal statuses cannot be reopened through the API.
+
+The existing authenticated admin WebSocket publishes `anomaly_incident` events. Events without a reliable account identifier are excluded from account-grouped rules; the implementation does not infer identity from forwarding headers or proxy IP addresses.

@@ -37,8 +37,9 @@ integration('PostgreSQL catalog integration (TEST_DATABASE_URL only)', () => {
       products_count: 50,
     });
     expect(typeof response.body.current_user).toBe('string');
+    expect(response.body).toMatchObject({ status: 'ready', anomaly_schema_ready: true, missing_anomaly_objects: [] });
     expect(Object.keys(response.body).sort()).toEqual([
-      'current_database', 'current_schema', 'current_user', 'products_count', 'products_relation',
+      'anomaly_schema_ready', 'current_database', 'current_schema', 'current_user', 'missing_anomaly_objects', 'products_count', 'products_relation', 'status',
     ]);
   });
 

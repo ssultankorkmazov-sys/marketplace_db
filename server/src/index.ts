@@ -6,6 +6,7 @@ import { loadConfig } from './config.js';
 import { checkDatabase, createPool } from './db.js';
 import { createAuditRealtime } from './realtime.js';
 import type { AuditLog } from './audit.js';
+import { loadAnomalyRuleConfig, startAnomalyWorker } from './anomalies.js';
 
 dotenv.config({ path: resolve(process.cwd(), '../.env') });
 
@@ -19,11 +20,12 @@ async function main() {
     const allowLocalOrigins = config.nodeEnv === 'development';
     const server = createServer(createApp(pool, { secureCookies: config.nodeEnv === 'production', allowLocalOrigins, auditPublisher }));
     realtime = createAuditRealtime(server, pool, { allowLocalOrigins });
+    const anomalyWorker = startAnomalyWorker(pool, loadAnomalyRuleConfig(), realtime);
     server.listen(config.port, () => {
       console.log(`MarketKZ backend listening on port ${config.port}`);
     });
 
-    const shutdown = () => { void realtime?.close().finally(() => server.close(() => void pool.end())); };
+    const shutdown = () => { void anomalyWorker.close().finally(() => realtime?.close().finally(() => server.close(() => void pool.end()))); };
     process.on('SIGINT', shutdown);
     process.on('SIGTERM', shutdown);
   } catch (error) {

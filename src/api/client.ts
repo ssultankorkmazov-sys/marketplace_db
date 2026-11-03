@@ -115,6 +115,19 @@ export interface AuditLogPage extends AuditLogFilters {
   failed: number;
   totalPages: number;
 }
+export type AnomalyType = 'REPEATED_FAILED_LOGINS' | 'REPEATED_ADMIN_ACCESS_DENIED' | 'UNUSUAL_ORDER_ACTIVITY'
+export type AnomalySeverity = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL'
+export type AnomalyStatus = 'NEW' | 'INVESTIGATING' | 'RESOLVED' | 'FALSE_POSITIVE'
+export interface AnomalyRecommendation { action: string; reason: string; priority: 'LOW' | 'MEDIUM' | 'HIGH'; verification_step: string }
+export interface AnomalyIncident {
+  incident_id: string; anomaly_type: AnomalyType; subject_user_id: number | null; severity: AnomalySeverity; risk_score: number; status: AnomalyStatus;
+  detected_at: string; updated_at: string; first_event_at: string; last_event_at: string; evidence: Record<string, unknown>; explanation: string;
+  recommendations: AnomalyRecommendation[]; deduplication_key: string; audit_log_ids: string[]
+}
+export interface AnomalyFilters { page?: number; pageSize?: number; severity?: AnomalySeverity; type?: AnomalyType; status?: AnomalyStatus; from?: string; to?: string }
+export interface AnomalyPage {
+  incidents: AnomalyIncident[]; page: number; pageSize: number; total: number; low: number; medium: number; high: number; critical: number; totalPages: number
+}
 export function auditWebSocketUrl(): string {
   const url = new URL(`${API_ROOT}/admin/logs/stream`, window.location.href);
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -144,5 +157,18 @@ export const adminApi = {
     return request<AuditLogPage>(`/admin/logs${query ? `?${query}` : ''}`);
   },
   async log(id: number) { return (await request<{ log: AuditLog }>(`/admin/logs/${id}`)).log },
+  async anomalies(filters: AnomalyFilters = {}) {
+    const params = new URLSearchParams()
+    for (const key of ['page', 'pageSize', 'severity', 'type', 'status', 'from', 'to'] as const) {
+      const value = filters[key]
+      if (value !== undefined && value !== '') params.set(key, String(value))
+    }
+    const query = params.toString()
+    return request<AnomalyPage>(`/admin/anomalies${query ? `?${query}` : ''}`)
+  },
+  async anomaly(id: string) { return (await request<{ incident: AnomalyIncident }>(`/admin/anomalies/${encodeURIComponent(id)}`)).incident },
+  async updateAnomalyStatus(id: string, status: Exclude<AnomalyStatus, 'NEW'>) {
+    return (await request<{ incident: Partial<AnomalyIncident> & Pick<AnomalyIncident, 'incident_id' | 'status'> }>(`/admin/anomalies/${encodeURIComponent(id)}/status`, { method: 'PATCH', body: JSON.stringify({ status }) })).incident
+  },
 }
 

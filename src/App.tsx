@@ -5,6 +5,7 @@ import {useAuth} from './context/Auth'
 import {Login,Register} from './pages/Auth'
 import {AdminLayout,Dashboard,AdminProducts,AdminCategories,AdminOrders,AdminUsers,AdminReviews} from './pages/Admin'
 import {AdminAuditLogs} from './pages/AdminAuditLogs'
+import {AdminAnomalies} from './pages/AdminAnomalies'
 import type {User as UserRow} from './types/database'
 import {Breadcrumbs,Drawer,type Crumb} from './components/extra'
 import {useStore} from './context/Store'
@@ -155,5 +156,5 @@ return <>{!admin&&<Header/>}<div className="min-h-[60vh]"><Routes>
 <Route path="/product/:productId" element={<ProductPage/>}/><Route path="/cart" element={<Cart/>}/><Route path="/checkout" element={<RequireAuth><Checkout/></RequireAuth>}/>
 <Route path="/orders" element={<RequireAuth><Orders/></RequireAuth>}/><Route path="/orders/:orderId" element={<RequireAuth><OrderDetails/></RequireAuth>}/><Route path="/favorites" element={<Favorites/>}/><Route path="/profile" element={<RequireAuth><Profile/></RequireAuth>}/>
 <Route path="/login" element={<Login/>}/><Route path="/register" element={<Register/>}/>
-<Route path="/admin" element={<RequireAuth admin><AdminLayout/></RequireAuth>}><Route index element={<Dashboard/>}/><Route path="products" element={<AdminProducts/>}/><Route path="categories" element={<AdminCategories/>}/><Route path="orders" element={<AdminOrders/>}/><Route path="users" element={<AdminUsers/>}/><Route path="reviews" element={<AdminReviews/>}/><Route path="logs" element={<AdminAuditLogs/>}/></Route>
+<Route path="/admin" element={<RequireAuth admin><AdminLayout/></RequireAuth>}><Route index element={<Dashboard/>}/><Route path="products" element={<AdminProducts/>}/><Route path="categories" element={<AdminCategories/>}/><Route path="orders" element={<AdminOrders/>}/><Route path="users" element={<AdminUsers/>}/><Route path="reviews" element={<AdminReviews/>}/><Route path="logs" element={<AdminAuditLogs/>}/><Route path="anomalies" element={<AdminAnomalies/>}/></Route>
 <Route path="*" element={<Page><EmptyState title="Страница не найдена"/></Page>}/></Routes></div>{!admin&&<><Footer/><BottomNav/></>}</>}

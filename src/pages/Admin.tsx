@@ -1,12 +1,12 @@
 import {useState,type ReactNode} from 'react'
 import {Link,NavLink,Outlet,useNavigate} from 'react-router-dom'
-import {LayoutDashboard,Package,Tags,ShoppingBag,Users,MessageSquare,LogOut,Menu,X,Pencil,Trash2,Eye,Plus,Wallet,Search,Activity,type LucideIcon} from 'lucide-react'
+import {LayoutDashboard,Package,Tags,ShoppingBag,Users,MessageSquare,LogOut,Menu,X,Pencil,Trash2,Eye,Plus,Wallet,Search,Activity,ShieldAlert,type LucideIcon} from 'lucide-react'
 import * as svc from '../services'
 import {adminApi} from '../api/client'
 import {useAuth} from '../context/Auth'
 import {resetAllData} from '../data/store'
 import {btn,ErrorState,formatPrice,Logo,Stars,useAsync} from '../components/ui'
-const NAV:[string,string,LucideIcon,boolean][]=[['/admin','Дашборд',LayoutDashboard,true],['/admin/products','Товары',Package,false],['/admin/categories','Категории',Tags,false],['/admin/orders','Заказы',ShoppingBag,false],['/admin/users','Пользователи',Users,false],['/admin/reviews','Отзывы',MessageSquare,false],['/admin/logs','Журнал активности',Activity,false]]
+const NAV:[string,string,LucideIcon,boolean][]=[['/admin','Дашборд',LayoutDashboard,true],['/admin/products','Товары',Package,false],['/admin/categories','Категории',Tags,false],['/admin/orders','Заказы',ShoppingBag,false],['/admin/users','Пользователи',Users,false],['/admin/reviews','Отзывы',MessageSquare,false],['/admin/logs','Журнал активности',Activity,false],['/admin/anomalies','Аномалии',ShieldAlert,false]]
 export function AdminLayout(){const[open,setOpen]=useState(false);const{session,logout}=useAuth();const nav=useNavigate()
 const side=<nav className="flex flex-col gap-1 p-3">{NAV.map(([to,l,I,end])=><NavLink key={to} to={to} end={end} className={({isActive})=>`flex items-center gap-2 rounded-lg px-3 py-2 text-sm ${isActive?'bg-red-50 font-semibold text-brand':'text-neutral-600 hover:bg-neutral-50'}`}><I size={18}/>{l}</NavLink>)}<button onClick={()=>{logout();nav('/login')}} className="mt-4 flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-neutral-600 hover:bg-neutral-50"><LogOut size={18}/>Выйти</button></nav>
 return <div className="min-h-screen bg-neutral-100 md:flex"><aside className="hidden w-56 shrink-0 border-r border-neutral-200 bg-white md:block"><div className="p-4"><Logo/></div>{side}</aside>

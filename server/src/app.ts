@@ -4,6 +4,7 @@ import { createHash, randomBytes, scrypt as scryptCallback, timingSafeEqual } fr
 import { promisify } from 'node:util';
 import { checkDatabase, checkDatabaseReadiness } from './db.js';
 import { insertAuditLog, publishAuditLog, type AuditEventInput, type AuditPublisher } from './audit.js';
+import { ANOMALY_TYPES, type AnomalyIncident, type IncidentStatus, type IncidentSeverity } from './anomalies.js';
 
 const scrypt = promisify(scryptCallback);
 export const SESSION_COOKIE_NAME = 'marketkz_session';
@@ -421,6 +422,161 @@ export function createApp(pool: Pool, options: { secureCookies?: boolean; allowL
     } catch (error) { return next(error); }
   });
 
+  app.get('/api/v1/admin/anomalies', async (request, response, next) => {
+    try {
+      const admin = await sessionUserFromToken(pool, cookieValue(request.headers.cookie, SESSION_COOKIE_NAME));
+      if (!admin) {
+        await auditBestEffort(pool, { action: 'ADMIN_ANOMALIES_ACCESS_DENIED', status: 'FAILURE', details: { reason: 'unauthenticated' } }, request.ip, options.auditPublisher);
+        return response.status(401).json({ error: 'Требуется вход.' });
+      }
+      if (admin.role !== 'admin') {
+        await auditBestEffort(pool, { userId: admin.user_id, action: 'ADMIN_ANOMALIES_ACCESS_DENIED', status: 'FAILURE', details: { reason: 'insufficient_role' } }, request.ip, options.auditPublisher);
+        return response.status(403).json({ error: 'Недостаточно прав.' });
+      }
+
+      const allowed = new Set(['page', 'pageSize', 'severity', 'type', 'status', 'from', 'to']);
+      if (Object.keys(request.query).some((key) => !allowed.has(key)) ||
+          ['severity', 'type', 'status', 'from', 'to'].some((key) => request.query[key] !== undefined && typeof request.query[key] !== 'string')) {
+        return response.status(400).json({ error: 'Некорректные параметры фильтра или пагинации.' });
+      }
+      const page = positiveInt(request.query.page, 1, 1_000_000);
+      const pageSize = positiveInt(request.query.pageSize, 25, 100);
+      const severity = request.query.severity as IncidentSeverity | undefined;
+      const type = request.query.type as string | undefined;
+      const status = request.query.status as IncidentStatus | undefined;
+      const from = request.query.from as string | undefined;
+      const to = request.query.to as string | undefined;
+      const validDate = (value: string | undefined) => {
+        if (value === undefined) return true;
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+        const date = new Date(`${value}T00:00:00Z`);
+        return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
+      };
+      if (page === null || pageSize === null ||
+          (severity !== undefined && !['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'].includes(severity)) ||
+          (type !== undefined && !ANOMALY_TYPES.includes(type as typeof ANOMALY_TYPES[number])) ||
+          (status !== undefined && !['NEW', 'INVESTIGATING', 'RESOLVED', 'FALSE_POSITIVE'].includes(status)) ||
+          !validDate(from) || !validDate(to) || (from && to && from > to)) {
+        return response.status(400).json({ error: 'Некорректные параметры фильтра или пагинации.' });
+      }
+
+      const values: unknown[] = [];
+      const filters: string[] = [];
+      const add = (value: unknown, expression: (placeholder: string) => string) => {
+        values.push(value);
+        filters.push(expression(`$${values.length}`));
+      };
+      if (severity) add(severity, (p) => `severity=${p}`);
+      if (type) add(type, (p) => `anomaly_type=${p}`);
+      if (status) add(status, (p) => `status=${p}`);
+      if (from) add(from, (p) => `detected_at >= ${p}::date`);
+      if (to) add(to, (p) => `detected_at < (${p}::date + INTERVAL '1 day')`);
+      const where = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
+      const [summary, incidents] = await Promise.all([
+        pool.query(`SELECT COUNT(*)::int AS total,
+          COUNT(*) FILTER (WHERE severity='LOW')::int AS low,
+          COUNT(*) FILTER (WHERE severity='MEDIUM')::int AS medium,
+          COUNT(*) FILTER (WHERE severity='HIGH')::int AS high,
+          COUNT(*) FILTER (WHERE severity='CRITICAL')::int AS critical
+          FROM public.anomaly_incidents ${where}`, values),
+        pool.query(
+          `SELECT incident.incident_id::text AS incident_id, incident.anomaly_type, incident.subject_user_id,
+            incident.severity, incident.risk_score, incident.status, incident.detected_at, incident.updated_at,
+            incident.first_event_at, incident.last_event_at, incident.evidence, incident.explanation,
+            incident.recommendations, incident.deduplication_key,
+            COALESCE(events.audit_log_ids, '[]'::jsonb) AS audit_log_ids
+           FROM public.anomaly_incidents incident
+           LEFT JOIN LATERAL (
+             SELECT jsonb_agg(link.log_id::text ORDER BY link.log_id) AS audit_log_ids
+             FROM public.anomaly_incident_events link WHERE link.incident_id=incident.incident_id
+           ) events ON TRUE
+           ${where ? `WHERE ${where.slice(6).replaceAll('severity=', 'incident.severity=').replaceAll('anomaly_type=', 'incident.anomaly_type=').replaceAll('status=', 'incident.status=').replaceAll('detected_at', 'incident.detected_at')}` : ''}
+           ORDER BY incident.detected_at DESC, incident.incident_id DESC
+           LIMIT $${values.length + 1} OFFSET $${values.length + 2}`,
+          [...values, pageSize, (page - 1) * pageSize],
+        ),
+      ]);
+      return response.json({ incidents: incidents.rows, page, pageSize, ...(summary.rows[0] ?? { total: 0, low: 0, medium: 0, high: 0, critical: 0 }), totalPages: Math.ceil((summary.rows[0]?.total ?? 0) / pageSize) });
+    } catch (error) { return next(error); }
+  });
+
+  app.get('/api/v1/admin/anomalies/:incidentId', async (request, response, next) => {
+    const incidentId = positiveBigIntId(request.params.incidentId);
+    if (incidentId === null) return response.status(400).json({ error: 'Некорректный ID инцидента.' });
+    try {
+      const admin = await sessionUserFromToken(pool, cookieValue(request.headers.cookie, SESSION_COOKIE_NAME));
+      if (!admin) {
+        await auditBestEffort(pool, { action: 'ADMIN_ANOMALIES_ACCESS_DENIED', status: 'FAILURE', details: { reason: 'unauthenticated' } }, request.ip, options.auditPublisher);
+        return response.status(401).json({ error: 'Требуется вход.' });
+      }
+      if (admin.role !== 'admin') {
+        await auditBestEffort(pool, { userId: admin.user_id, action: 'ADMIN_ANOMALIES_ACCESS_DENIED', status: 'FAILURE', details: { reason: 'insufficient_role' } }, request.ip, options.auditPublisher);
+        return response.status(403).json({ error: 'Недостаточно прав.' });
+      }
+      const { rows } = await pool.query(
+        `SELECT incident.incident_id::text AS incident_id, incident.anomaly_type, incident.subject_user_id,
+          incident.severity, incident.risk_score, incident.status, incident.detected_at, incident.updated_at,
+          incident.first_event_at, incident.last_event_at, incident.evidence, incident.explanation,
+          incident.recommendations, incident.deduplication_key,
+          COALESCE(events.audit_log_ids, '[]'::jsonb) AS audit_log_ids
+         FROM public.anomaly_incidents incident
+         LEFT JOIN LATERAL (
+           SELECT jsonb_agg(link.log_id::text ORDER BY link.log_id) AS audit_log_ids
+           FROM public.anomaly_incident_events link WHERE link.incident_id=incident.incident_id
+         ) events ON TRUE WHERE incident.incident_id=$1`, [incidentId],
+      );
+      return rows[0] ? response.json({ incident: rows[0] }) : response.status(404).json({ error: 'Инцидент не найден.' });
+    } catch (error) { return next(error); }
+  });
+
+  app.patch('/api/v1/admin/anomalies/:incidentId/status', async (request, response, next) => {
+    const incidentId = positiveBigIntId(request.params.incidentId);
+    if (incidentId === null) return response.status(400).json({ error: 'Некорректный ID инцидента.' });
+    const target = request.body?.status as IncidentStatus | undefined;
+    if (!['INVESTIGATING', 'RESOLVED', 'FALSE_POSITIVE'].includes(target ?? '')) {
+      return response.status(400).json({ error: 'Недопустимый статус инцидента.' });
+    }
+    let actorId: number | null = null;
+    try {
+      const admin = await sessionUserFromToken(pool, cookieValue(request.headers.cookie, SESSION_COOKIE_NAME));
+      if (!admin) {
+        await auditBestEffort(pool, { action: 'ADMIN_ANOMALIES_ACCESS_DENIED', status: 'FAILURE', details: { reason: 'unauthenticated' } }, request.ip, options.auditPublisher);
+        return response.status(401).json({ error: 'Требуется вход.' });
+      }
+      if (admin.role !== 'admin') {
+        await auditBestEffort(pool, { userId: admin.user_id, action: 'ADMIN_ANOMALIES_ACCESS_DENIED', status: 'FAILURE', details: { reason: 'insufficient_role' } }, request.ip, options.auditPublisher);
+        return response.status(403).json({ error: 'Недостаточно прав.' });
+      }
+      actorId = admin.user_id;
+      const changed = await inTransaction(pool, async (client) => {
+        const current = await client.query<{ status: IncidentStatus }>(
+          'SELECT status FROM public.anomaly_incidents WHERE incident_id=$1 FOR UPDATE', [incidentId],
+        );
+        if (!current.rows[0]) return { missing: true as const };
+        const previous = current.rows[0].status;
+        if (previous === 'RESOLVED' || previous === 'FALSE_POSITIVE') return { conflict: true as const };
+        if (previous === target) return { status: target, audit: null };
+        const updated = await client.query<AnomalyIncident>(
+          `UPDATE public.anomaly_incidents SET status=$1, updated_at=NOW()
+           WHERE incident_id=$2
+           RETURNING incident_id::text AS incident_id, anomaly_type, subject_user_id, severity, risk_score, status,
+             detected_at, updated_at, first_event_at, last_event_at, evidence, explanation, recommendations, deduplication_key`,
+          [target, incidentId],
+        );
+        const audit = await insertAuditLog(client, {
+          userId: actorId, action: 'ANOMALY_STATUS_CHANGED', entityType: 'anomaly_incident',
+          entityId: Number(incidentId) <= MAX_DATABASE_ID ? Number(incidentId) : null,
+          status: 'SUCCESS', details: { from: previous, to: target }, ipAddress: request.ip,
+        });
+        return { status: target, incident: updated.rows[0], audit };
+      });
+      if ('missing' in changed) return response.status(404).json({ error: 'Инцидент не найден.' });
+      if ('conflict' in changed) return response.status(409).json({ error: 'Завершённый инцидент нельзя изменить.' });
+      if (changed.audit) publishAuditLog(options.auditPublisher, changed.audit);
+      return response.json({ incident: changed.incident ?? { incident_id: incidentId, status: changed.status } });
+    } catch (error) { return next(error); }
+  });
+
   app.get('/api/v1/admin/orders', async (request, response, next) => {
     try {
       const admin = await sessionUserFromToken(pool, cookieValue(request.headers.cookie, SESSION_COOKIE_NAME));
@@ -666,7 +822,8 @@ export function createApp(pool: Pool, options: { secureCookies?: boolean; allowL
   app.get('/api/health/ready', async (_request, response) => {
     try {
       const readiness = await checkDatabaseReadiness(pool);
-      return response.status(readiness.products_relation ? 200 : 503).json(readiness);
+      const ready = Boolean(readiness.products_relation && readiness.anomaly_schema_ready);
+      return response.status(ready ? 200 : 503).json({ status: ready ? 'ready' : 'unavailable', ...readiness });
     } catch (error) {
       console.error('Database readiness check failed:', error instanceof Error ? error.message : 'Unknown error');
       return response.status(503).json({ error: 'Database readiness check failed' });

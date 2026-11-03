@@ -2,6 +2,7 @@ import type { Server } from 'node:http';
 import type { Pool } from 'pg';
 import { WebSocket, WebSocketServer } from 'ws';
 import type { AuditLog, AuditPublisher } from './audit.js';
+import type { AnomalyIncident } from './anomalies.js';
 import { isAllowedFrontendOrigin, sessionUserFromToken } from './app.js';
 
 const STREAM_PATH = '/api/v1/admin/logs/stream';
@@ -17,7 +18,7 @@ function reject(socket: import('node:stream').Duplex, status: number, message: s
   socket.destroy();
 }
 
-export function createAuditRealtime(server: Server, pool: Pool, options: { allowLocalOrigins?: boolean; sessionCheckIntervalMs?: number } = {}): AuditPublisher & { close(): Promise<void> } {
+export function createAuditRealtime(server: Server, pool: Pool, options: { allowLocalOrigins?: boolean; sessionCheckIntervalMs?: number } = {}): AuditPublisher & { publishIncident(incident: AnomalyIncident): void; close(): Promise<void> } {
   const wss = new WebSocketServer({ noServer: true, maxPayload: 1024 });
   const alive = new WeakSet<WebSocket>();
   const sessionTokens = new WeakMap<WebSocket, string>();
@@ -97,6 +98,12 @@ export function createAuditRealtime(server: Server, pool: Pool, options: { allow
   return {
     publish(log: AuditLog) {
       const payload = JSON.stringify({ type: 'audit_log', log });
+      for (const socket of wss.clients) {
+        if (socket.readyState === WebSocket.OPEN) socket.send(payload, (error) => { if (error) socket.terminate(); });
+      }
+    },
+    publishIncident(incident: AnomalyIncident) {
+      const payload = JSON.stringify({ type: 'anomaly_incident', incident });
       for (const socket of wss.clients) {
         if (socket.readyState === WebSocket.OPEN) socket.send(payload, (error) => { if (error) socket.terminate(); });
       }

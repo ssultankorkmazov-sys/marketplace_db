@@ -10,7 +10,7 @@
     "test": "vitest run",
     "db:init": "tsx scripts/init-db.ts",
     "db:migrate": "node --require ./scripts/node-os-userinfo-fallback.cjs --import tsx/esm scripts/migrate.ts",
-    "test:integration": "vitest run tests/integration.test.ts"
+    "test:integration": "vitest run tests/integration.test.ts tests/anomalies.integration.test.ts"
   },
   "dependencies": {
     "dotenv": "^16.4.7",

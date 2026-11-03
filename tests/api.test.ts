@@ -43,4 +43,34 @@ describe('configured production API URL', () => {
     const { auditWebSocketUrl } = await import('../src/api/client')
     expect(auditWebSocketUrl()).toBe('wss://marketkz-api.onrender.com/api/v1/admin/logs/stream')
   })
+
+  it('requests anomalies with only supported filters and session credentials', async () => {
+    vi.stubEnv('VITE_API_URL', 'https://marketkz-api.onrender.com/api/v1')
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ incidents: [], page: 2, pageSize: 20, total: 0, low: 0, medium: 0, high: 0, critical: 0, totalPages: 0 }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const { adminApi } = await import('../src/api/client')
+
+    await adminApi.anomalies({ page: 2, pageSize: 20, severity: 'HIGH', type: 'UNUSUAL_ORDER_ACTIVITY', status: 'INVESTIGATING', from: '2026-10-01', to: '2026-10-31' })
+
+    expect(fetchMock.mock.calls[0][0]).toBe('https://marketkz-api.onrender.com/api/v1/admin/anomalies?page=2&pageSize=20&severity=HIGH&type=UNUSUAL_ORDER_ACTIVITY&status=INVESTIGATING&from=2026-10-01&to=2026-10-31')
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ credentials: 'include' })
+  })
+
+  it('loads anomaly details and changes only the requested status', async () => {
+    vi.stubEnv('VITE_API_URL', 'https://marketkz-api.onrender.com/api/v1')
+    const incident = { incident_id: '17', status: 'RESOLVED' }
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ incident }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ incident }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const { adminApi } = await import('../src/api/client')
+
+    await adminApi.anomaly('17')
+    await adminApi.updateAnomalyStatus('17', 'RESOLVED')
+
+    expect(fetchMock.mock.calls[0][0]).toBe('https://marketkz-api.onrender.com/api/v1/admin/anomalies/17')
+    expect(fetchMock.mock.calls[1][0]).toBe('https://marketkz-api.onrender.com/api/v1/admin/anomalies/17/status')
+    expect(fetchMock.mock.calls[1][1]).toMatchObject({ method: 'PATCH', credentials: 'include' })
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ status: 'RESOLVED' })
+  })
 })

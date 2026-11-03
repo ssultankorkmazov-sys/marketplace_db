@@ -1,7 +1,8 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import { Activity, ChevronLeft, ChevronRight, RefreshCw, Wifi, WifiOff } from 'lucide-react'
-import { adminApi, auditWebSocketUrl, type AuditLog, type AuditLogFilters, type AuditLogPage } from '../api/client'
+import { adminApi, type AuditLogFilters, type AuditLogPage } from '../api/client'
 import { btn, ErrorState } from '../components/ui'
+import { useAdminRealtime } from '../hooks/useAdminRealtime'
 
 const PAGE_SIZE = 25
 const inputClass = 'h-10 rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none focus:border-brand'
@@ -15,7 +16,6 @@ export function AdminAuditLogs() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
-  const [connected, setConnected] = useState(false)
   const [refreshTick, setRefreshTick] = useState(0)
 
   const refresh = useCallback(async () => {
@@ -26,6 +26,11 @@ export function AdminAuditLogs() {
   }, [filters])
   const refreshRef = useRef(refresh)
   useEffect(() => { refreshRef.current = refresh }, [refresh])
+  const connected = useAdminRealtime(useCallback((event) => {
+    if (event.type === 'connected' || event.type === 'audit_log') {
+      void refreshRef.current().catch((reason: unknown) => setError(reason instanceof Error ? reason.message : 'Не удалось обновить журнал.'))
+    }
+  }, []))
 
   useEffect(() => {
     let active = true
@@ -39,45 +44,6 @@ export function AdminAuditLogs() {
     }).finally(() => { if (active) setLoading(false) })
     return () => { active = false }
   }, [filters, refreshTick])
-
-  useEffect(() => {
-    let stopped = false
-    let socket: WebSocket | undefined
-    let reconnectTimer: ReturnType<typeof setTimeout> | undefined
-    let attempts = 0
-    const connect = () => {
-      if (stopped) return
-      socket = new WebSocket(auditWebSocketUrl())
-      socket.onopen = () => {
-        attempts = 0
-        setConnected(true)
-        // Reload the REST page after each connect so events missed during a disconnect are recovered.
-        void refreshRef.current().catch((reason: unknown) => setError(reason instanceof Error ? reason.message : 'Не удалось обновить журнал.'))
-      }
-      socket.onmessage = (message) => {
-        try {
-          const event = JSON.parse(String(message.data)) as { type?: string; log?: AuditLog }
-          if (event.type === 'audit_log' && event.log) void refreshRef.current().catch((reason: unknown) => setError(reason instanceof Error ? reason.message : 'Не удалось обновить журнал.'))
-        } catch { /* Ignore malformed or future message types; REST remains available. */ }
-      }
-      socket.onclose = () => {
-        setConnected(false)
-        if (!stopped) {
-          const delay = Math.min(1000 * 2 ** attempts, 30_000)
-          attempts += 1
-          reconnectTimer = setTimeout(connect, delay)
-        }
-      }
-      socket.onerror = () => socket?.close()
-    }
-    connect()
-    return () => {
-      stopped = true
-      if (reconnectTimer) clearTimeout(reconnectTimer)
-      socket?.close()
-      setConnected(false)
-    }
-  }, [])
 
   const setFilter = (patch: Partial<AuditLogFilters>) => setFilters((current) => ({ ...current, ...patch, page: 1 }))
   const submitSearch = (event: React.FormEvent) => {

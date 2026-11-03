@@ -8,7 +8,7 @@ import { applyMigrations, assertMigrationTargetDatabase } from '../src/migration
 dotenv.config({ path: resolve(process.cwd(), '../.env') });
 const pool = createPool(loadConfig());
 try {
-  const names = ['001_auth.sql', '002_order_delivery.sql', '003_audit_logs.sql'];
+  const names = ['001_auth.sql', '002_order_delivery.sql', '003_audit_logs.sql', '004_anomaly_incidents.sql', '005_anomaly_queue_dead_letter.sql'];
   const migrations = await Promise.all(names.map(async (name) => ({
     name,
     sql: await readFile(resolve(process.cwd(), `../db/migrations/${name}`), 'utf8'),
