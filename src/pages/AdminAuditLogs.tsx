@@ -7,7 +7,7 @@ import { useAdminRealtime } from '../hooks/useAdminRealtime'
 const PAGE_SIZE = 25
 const inputClass = 'h-10 rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none focus:border-brand'
 const actionLabel = (action: string) => action.toLowerCase().replace(/_/g, ' ')
-const actions = ['LOGIN_SUCCESS', 'LOGIN_FAILED', 'USER_REGISTERED', 'LOGOUT', 'ORDER_CREATED', 'ORDER_CREATE_FAILED', 'ORDER_STATUS_CHANGED', 'ADMIN_ORDERS_ACCESS_DENIED', 'PRODUCT_CREATED', 'PRODUCT_UPDATED', 'PRODUCT_DELETED', 'PRODUCTS_ACCESS_DENIED', 'ADMIN_LOGS_ACCESS_DENIED']
+const actions = ['LOGIN_SUCCESS', 'LOGIN_FAILED', 'USER_REGISTERED', 'LOGOUT', 'ORDER_CREATED', 'ORDER_CREATE_FAILED', 'ORDER_STATUS_CHANGED', 'ADMIN_ORDERS_ACCESS_DENIED', 'ADMIN_ANOMALIES_ACCESS_DENIED', 'ANOMALY_STATUS_CHANGED', 'PRODUCT_CREATED', 'PRODUCT_UPDATED', 'PRODUCT_DELETED', 'PRODUCTS_ACCESS_DENIED', 'ADMIN_LOGS_ACCESS_DENIED']
 
 export function AdminAuditLogs() {
   const [filters, setFilters] = useState<AuditLogFilters>({ page: 1, pageSize: PAGE_SIZE })

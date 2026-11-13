@@ -518,12 +518,26 @@ export function createApp(pool: Pool, options: { secureCookies?: boolean; allowL
           incident.severity, incident.risk_score, incident.status, incident.detected_at, incident.updated_at,
           incident.first_event_at, incident.last_event_at, incident.evidence, incident.explanation,
           incident.recommendations, incident.deduplication_key,
-          COALESCE(events.audit_log_ids, '[]'::jsonb) AS audit_log_ids
+          COALESCE(events.audit_log_ids, '[]'::jsonb) AS audit_log_ids,
+          COALESCE(timeline.events, '[]'::jsonb) AS timeline
          FROM public.anomaly_incidents incident
          LEFT JOIN LATERAL (
            SELECT jsonb_agg(link.log_id::text ORDER BY link.log_id) AS audit_log_ids
            FROM public.anomaly_incident_events link WHERE link.incident_id=incident.incident_id
-         ) events ON TRUE WHERE incident.incident_id=$1`, [incidentId],
+         ) events ON TRUE
+         LEFT JOIN LATERAL (
+           SELECT jsonb_agg(jsonb_build_object(
+             'log_id', log.log_id::text,
+             'created_at', log.created_at,
+             'action', log.action,
+             'status', log.status,
+             'entity_type', log.entity_type,
+             'entity_id', log.entity_id
+           ) ORDER BY log.created_at, log.log_id) AS events
+           FROM public.anomaly_incident_events link
+           JOIN public.audit_logs log ON log.log_id=link.log_id
+           WHERE link.incident_id=incident.incident_id
+         ) timeline ON TRUE WHERE incident.incident_id=$1`, [incidentId],
       );
       return rows[0] ? response.json({ incident: rows[0] }) : response.status(404).json({ error: 'Инцидент не найден.' });
     } catch (error) { return next(error); }

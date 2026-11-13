@@ -10,6 +10,7 @@ const incident = {
   explanation: 'Six failed sign-in events exceeded the configured threshold.',
   recommendations: [{ action: 'Review recent sign-in activity.', reason: 'Six failures were recorded for one account.', priority: 'HIGH', verification_step: 'Confirm further failures stop.' }],
   deduplication_key: 'REPEATED_FAILED_LOGINS:user:8', audit_log_ids: ['1', '2'],
+  timeline: [{ log_id: '1', created_at: '2026-10-31T09:59:10.000Z', action: 'LOGIN_FAILED', status: 'FAILURE', entity_type: 'user', entity_id: 8 }],
 }
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
 
@@ -38,7 +39,11 @@ describe('admin anomaly dashboard', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Детали' }))
     expect(await screen.findByText('Six failed sign-in events exceeded the configured threshold.')).toBeTruthy()
     expect(screen.getByText('Review recent sign-in activity.')).toBeTruthy()
-    expect(screen.getByText(/#1, #2/)).toBeTruthy()
+    expect(screen.getByRole('heading', { name: 'Хронология событий' })).toBeTruthy()
+    expect(screen.getByText('login failed')).toBeTruthy()
+    expect(screen.getByText('Ошибка')).toBeTruthy()
+    expect(screen.getByText(/Событие #1 · user #8/)).toBeTruthy()
+    expect(screen.queryByText(/ip_address|details/i)).toBeNull()
   })
 
   it('confirms status changes and sends them through the API', async () => {

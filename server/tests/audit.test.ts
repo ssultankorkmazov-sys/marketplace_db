@@ -42,6 +42,25 @@ describe('audit log service and admin API', () => {
     expect(String(listCall[0])).toContain('ORDER BY created_at DESC, log_id DESC');
   });
 
+  it.each(['ADMIN_ANOMALIES_ACCESS_DENIED', 'ANOMALY_STATUS_CHANGED'])(
+    'returns audit entries when filtered by %s', async (action) => {
+      const event = { ...sample, action, status: action === 'ADMIN_ANOMALIES_ACCESS_DENIED' ? 'FAILURE' : 'SUCCESS' };
+      const query = vi.fn(async (sql: string, values?: unknown[]) => {
+        if (sql.includes('FROM user_sessions')) return { rows: [admin] };
+        if (sql.includes('SELECT log_id') && sql.includes('FROM audit_logs')) return { rows: values?.[0] === action ? [event] : [] };
+        if (sql.includes('COUNT(*) FILTER')) return { rows: [{ total: 1, successful: 1, failed: 0 }] };
+        return { rows: [] };
+      });
+      const response = await request(createApp({ query } as unknown as Pool))
+        .get(`/api/v1/admin/logs?action=${action}`).set('Cookie', cookie);
+      expect(response.status).toBe(200);
+      expect(response.body.logs).toEqual([event]);
+      const listCall = query.mock.calls.find(([sql]) => String(sql).includes('SELECT log_id') && String(sql).includes('FROM audit_logs'))!;
+      expect(String(listCall[0])).toContain('action = $1');
+      expect(listCall[1]?.[0]).toBe(action);
+    },
+  );
+
   it('returns a single log record only to an administrator', async () => {
     const query = vi.fn(async (sql: string) => {
       if (sql.includes('FROM user_sessions')) return { rows: [admin] };

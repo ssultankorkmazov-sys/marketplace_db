@@ -122,7 +122,10 @@ export interface AnomalyRecommendation { action: string; reason: string; priorit
 export interface AnomalyIncident {
   incident_id: string; anomaly_type: AnomalyType; subject_user_id: number | null; severity: AnomalySeverity; risk_score: number; status: AnomalyStatus;
   detected_at: string; updated_at: string; first_event_at: string; last_event_at: string; evidence: Record<string, unknown>; explanation: string;
-  recommendations: AnomalyRecommendation[]; deduplication_key: string; audit_log_ids: string[]
+  recommendations: AnomalyRecommendation[]; deduplication_key: string; audit_log_ids: string[]; timeline: AnomalyAuditEvent[]
+}
+export interface AnomalyAuditEvent {
+  log_id: string; created_at: string; action: string; status: 'SUCCESS' | 'FAILURE'; entity_type: string | null; entity_id: number | null
 }
 export interface AnomalyFilters { page?: number; pageSize?: number; severity?: AnomalySeverity; type?: AnomalyType; status?: AnomalyStatus; from?: string; to?: string }
 export interface AnomalyPage {

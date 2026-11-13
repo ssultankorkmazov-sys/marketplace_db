@@ -229,6 +229,31 @@ describe('admin anomaly management API', () => {
     expect((await request(app).patch('/api/v1/admin/anomalies/1/status').set('Cookie', cookie).send({ status: 'NEW' })).status).toBe(400);
   });
 
+  it('returns a safe chronological list of linked audit events in incident details', async () => {
+    const timeline = [{ log_id: '12', created_at: eventAt.toISOString(), action: 'LOGIN_FAILED', status: 'FAILURE', entity_type: 'user', entity_id: 8 }];
+    const query = vi.fn(async (sql: string, values?: unknown[]) => {
+      if (sql.includes('FROM user_sessions')) return { rows: [admin] };
+      if (sql.includes('FROM public.anomaly_incidents incident') && sql.includes('timeline.events')) {
+        return { rows: [{ ...incident, audit_log_ids: ['12'], timeline }] };
+      }
+      return { rows: [] };
+    });
+    const response = await request(createApp({ query } as unknown as Pool)).get('/api/v1/admin/anomalies/41').set('Cookie', cookie);
+
+    expect(response.status).toBe(200);
+    expect(response.body.incident.timeline).toEqual(timeline);
+    const detailCall = query.mock.calls.find(([sql]) => String(sql).includes('timeline.events'))!;
+    expect(detailCall[1]).toEqual(['41']);
+    expect(String(detailCall[0])).toContain("'created_at', log.created_at");
+    expect(String(detailCall[0])).toContain("'action', log.action");
+    expect(String(detailCall[0])).toContain("'status', log.status");
+    expect(String(detailCall[0])).toContain("'entity_type', log.entity_type");
+    expect(String(detailCall[0])).toContain("'entity_id', log.entity_id");
+    expect(String(detailCall[0])).toContain('ORDER BY log.created_at, log.log_id');
+    expect(String(detailCall[0])).not.toContain("'ip_address'");
+    expect(String(detailCall[0])).not.toContain("'details'");
+  });
+
   it('updates a non-terminal incident in a transaction and writes an audit event', async () => {
     const calls: { sql: string; values?: unknown[] }[] = [];
     const clientQuery = vi.fn(async (sql: string, values?: unknown[]) => {
