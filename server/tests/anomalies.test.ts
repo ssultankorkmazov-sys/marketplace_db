@@ -209,6 +209,8 @@ describe('admin anomaly management API', () => {
     const app = createApp({ query } as unknown as Pool);
     expect((await request(app).get('/api/v1/admin/anomalies')).status).toBe(401);
     expect((await request(app).get('/api/v1/admin/anomalies').set('Cookie', cookie)).status).toBe(403);
+    expect((await request(app).get('/api/v1/admin/anomalies/queue-stats')).status).toBe(401);
+    expect((await request(app).get('/api/v1/admin/anomalies/queue-stats').set('Cookie', cookie)).status).toBe(403);
     expect((await request(app).get('/api/v1/admin/anomalies/1').set('Cookie', cookie)).status).toBe(403);
     expect((await request(app).patch('/api/v1/admin/anomalies/1/status').set('Cookie', cookie).send({ status: 'RESOLVED' })).status).toBe(403);
     expect(query.mock.calls.filter(([sql]) => !String(sql).includes('INSERT INTO audit_logs')).every(([sql]) => String(sql).includes('FROM user_sessions'))).toBe(true);
@@ -252,6 +254,26 @@ describe('admin anomaly management API', () => {
     expect(String(detailCall[0])).toContain('ORDER BY log.created_at, log.log_id');
     expect(String(detailCall[0])).not.toContain("'ip_address'");
     expect(String(detailCall[0])).not.toContain("'details'");
+  });
+
+  it('returns queue counts and last processed time only to administrators', async () => {
+    const queueStats = { pending: 3, processed: 21, dead_letter: 2, processing_errors: 4, last_processed_at: eventAt.toISOString() };
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes('FROM user_sessions')) return { rows: [admin] };
+      if (sql.includes('FROM public.anomaly_event_queue')) return { rows: [queueStats] };
+      return { rows: [] };
+    });
+    const response = await request(createApp({ query } as unknown as Pool)).get('/api/v1/admin/anomalies/queue-stats').set('Cookie', cookie);
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual(queueStats);
+    const statsCall = query.mock.calls.find(([sql]) => String(sql).includes('FROM public.anomaly_event_queue'))!;
+    expect(String(statsCall[0])).toContain('processed_at IS NULL AND dead_lettered_at IS NULL');
+    expect(String(statsCall[0])).toContain('processed_at IS NOT NULL');
+    expect(String(statsCall[0])).toContain('dead_lettered_at IS NOT NULL');
+    expect(String(statsCall[0])).toContain('SUM(attempts)');
+    expect(String(statsCall[0])).toContain('MAX(processed_at)');
+    expect(String(statsCall[0])).not.toContain('last_error');
   });
 
   it('updates a non-terminal incident in a transaction and writes an audit event', async () => {

@@ -26,30 +26,26 @@ export const getCatalogCategoryById=(id:number)=>useLocalCatalog?wait(T.categori
 export const getProducts=(q?:string)=>{const s=q?.trim().toLowerCase();return wait(T.products().filter(p=>!s||p.name.toLowerCase().includes(s)||(p.description??'').toLowerCase().includes(s)).map(stats))}
 export const getProductById=(id:number)=>{const p=product(id);return wait(p&&stats(p))}
 export const getProductsByCategory=(id:number)=>wait(T.products().filter(p=>p.category_id===id).map(stats))
-export const getCategories=()=>wait(T.categories().map(c=>({...c,count:T.products().filter(p=>p.category_id===c.category_id).length})))
+export const getCategories=()=>adminApi.categories()
 export const getCategoryById=(id:number)=>wait(T.categories().find(c=>c.category_id===id))
 type ProductInput=Omit<Product,'product_id'>
 export const getAdminProducts=()=>adminApi.products()
 export const createProduct=(d:ProductInput)=>adminApi.createProduct(d)
 export const updateProduct=async(id:number,d:Partial<ProductInput>)=>{const current=(await getAdminProducts()).find(p=>p.product_id===id);if(!current)throw new Error('Товар не найден.');return adminApi.updateProduct(id,{name:current.name,description:current.description,price:current.price,stock_quantity:current.stock_quantity,category_id:current.category_id,...d})}
 export const deleteProduct=(id:number)=>adminApi.deleteProduct(id)
-const dupCat=(name:string,id=0)=>T.categories().some(c=>c.category_id!==id&&c.category_name.toLowerCase()===name.trim().toLowerCase())
-export const createCategory=(name:string)=>{if(!name.trim()||dupCat(name))return Promise.reject(new Error('Название пустое или уже существует.'))
-const c={category_id:nextId(T.categories().map(x=>x.category_id)),category_name:name.trim()};save(KEYS.categories,[...T.categories(),c]);return wait(c)}
-export const updateCategory=(id:number,name:string)=>{if(!name.trim()||dupCat(name,id))return Promise.reject(new Error('Название пустое или уже существует.'))
-save(KEYS.categories,T.categories().map(c=>c.category_id===id?{...c,category_name:name.trim()}:c));return wait(true)}
-export const deleteCategory=(id:number)=>{const n=T.products().filter(p=>p.category_id===id).length;if(n)return Promise.reject(new Error(`Нельзя удалить: в категории ${n} товар(ов).`))
-save(KEYS.categories,T.categories().filter(c=>c.category_id!==id));return wait(true)}
+export const createCategory=(name:string)=>adminApi.createCategory(name)
+export const updateCategory=(id:number,name:string)=>adminApi.updateCategory(id,name)
+export const deleteCategory=(id:number)=>adminApi.deleteCategory(id)
 // ---- reviews
 export const getReviewsByProductId=(id:number):Promise<(Review&{user?:User})[]>=>wait(T.reviews().filter(r=>r.product_id===id).sort((a,b)=>b.review_date.localeCompare(a.review_date)).map(r=>({...r,user:user(r.user_id)})))
 export const getReviewsByUserId=(id:number)=>wait(T.reviews().filter(r=>r.user_id===id).map(r=>({...r,product:product(r.product_id)})))
 export const getReviews=()=>wait([...T.reviews()])
 export const getReviewsForProduct=(id:number)=>getReviewsByProductId(id)
-export const getAllReviews=()=>wait(T.reviews().map(r=>({...r,user:user(r.user_id),product:product(r.product_id)})))
+export const getAllReviews=()=>adminApi.reviews()
 export const createReview=(d:{user_id:number;product_id:number;rating:number;comment:string})=>{const r:Review={...d,review_id:nextId(T.reviews().map(x=>x.review_id)),review_date:new Date().toISOString()};save(KEYS.reviews,[...T.reviews(),r]);return wait(r)}
-export const deleteReview=(id:number)=>{save(KEYS.reviews,T.reviews().filter(r=>r.review_id!==id));return wait(true)}
+export const deleteReview=(id:number)=>adminApi.deleteReview(id)
 // ---- users
-export const getUsers=()=>wait(T.users())
+export const getUsers=()=>adminApi.users()
 export const getUserById=async(id:number)=>{const current=await authApi.me();return current.user.user_id===id?current.user:undefined}
 export const addUser=(d:Omit<User,'user_id'>):User=>{const u={...d,user_id:nextId(T.users().map(x=>x.user_id))};save(KEYS.users,[...T.users(),u]);return u}
 export const createUser=(d:Omit<User,'user_id'>)=>wait(addUser(d))

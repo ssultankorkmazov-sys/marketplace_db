@@ -22,6 +22,7 @@ describe('admin anomaly dashboard', () => {
     vi.stubGlobal('WebSocket', FakeWebSocket)
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input), window.location.href)
+      if (url.pathname.endsWith('/admin/anomalies/queue-stats')) return json({ pending: 3, processed: 21, dead_letter: 2, processing_errors: 4, last_processed_at: '2026-10-31T10:01:00.000Z' })
       if (url.pathname.endsWith('/admin/anomalies/17')) return json({ incident })
       const status = url.searchParams.get('status')
       return json({ incidents: [incident], page: Number(url.searchParams.get('page') ?? 1), pageSize: Number(url.searchParams.get('pageSize') ?? 20), total: status === 'NEW' ? 1 : 2, low: 0, medium: 1, high: 1, critical: 0, totalPages: url.searchParams.get('pageSize') === '1' ? 1 : 2 })
@@ -31,6 +32,11 @@ describe('admin anomaly dashboard', () => {
 
     expect(await screen.findByText('Повторные ошибки входа')).toBeTruthy()
     expect(await screen.findByText('Высокий и критический риск')).toBeTruthy()
+    expect(screen.getByText('Pending').parentElement?.textContent).toContain('3')
+    expect(screen.getByText('Processed').parentElement?.textContent).toContain('21')
+    expect(screen.getByText('Dead-letter').parentElement?.textContent).toContain('2')
+    expect(screen.getByText('Ошибки обработки').parentElement?.textContent).toContain('4')
+    expect(screen.getByText('Последняя обработка').parentElement?.textContent).toContain('31.10.2026')
     fireEvent.click(screen.getByRole('button', { name: 'Дальше' }))
     await waitFor(() => expect(fetchMock.mock.calls.some(([input]) => String(input).includes('page=2'))).toBe(true))
     fireEvent.change(screen.getByLabelText('Фильтр по уровню риска'), { target: { value: 'HIGH' } })
@@ -53,6 +59,7 @@ describe('admin anomaly dashboard', () => {
     let savedStatus = 'NEW'
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = new URL(String(input), window.location.href)
+      if (url.pathname.endsWith('/admin/anomalies/queue-stats')) return json({ pending: 0, processed: 0, dead_letter: 0, processing_errors: 0, last_processed_at: null })
       if (url.pathname.endsWith('/status')) {
         savedStatus = JSON.parse(String(init?.body)).status
         return json({ incident: { incident_id: '17', status: savedStatus } })
@@ -70,5 +77,20 @@ describe('admin anomaly dashboard', () => {
     expect(window.confirm).toHaveBeenCalled()
     expect(fetchMock.mock.calls.some(([input, init]) => String(input).endsWith('/admin/anomalies/17/status') && init?.method === 'PATCH')).toBe(true)
     expect((await screen.findByRole('status')).textContent).toContain('обновлён')
+  })
+
+  it('shows a queue-specific error when queue statistics cannot be loaded', async () => {
+    class FakeWebSocket { onopen: (() => void) | null = null; onmessage: ((event: { data: string }) => void) | null = null; onclose: (() => void) | null = null; onerror: (() => void) | null = null; close() {} }
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), window.location.href)
+      if (url.pathname.endsWith('/admin/anomalies/queue-stats')) return json({ error: 'Queue unavailable' }, 503)
+      return json({ incidents: [], page: 1, pageSize: 20, total: 0, low: 0, medium: 0, high: 0, critical: 0, totalPages: 0 })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<BrowserRouter><AdminAnomalies/></BrowserRouter>)
+
+    expect(await screen.findByRole('alert')).toBeTruthy()
+    expect(screen.getByRole('alert').textContent).toContain('Queue unavailable')
   })
 })

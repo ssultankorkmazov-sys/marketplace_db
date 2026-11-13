@@ -7,6 +7,42 @@ afterEach(() => {
 })
 
 describe('configured production API URL', () => {
+  it('uses protected admin endpoints for categories, users, and reviews', async () => {
+    vi.stubEnv('VITE_API_URL', 'https://marketkz-api.onrender.com/api/v1')
+    const category = { category_id: 9, category_name: 'New', count: 0 }
+    const user = { user_id: 4, name: 'Buyer', email: 'buyer@example.kz', phone: '123', address: null, order_count: 1, review_count: 0 }
+    const review = { review_id: 3, user_id: 4, product_id: 9, rating: 5, comment: 'Nice', review_date: '2026-10-13', user: { user_id: 4, name: 'Buyer' }, product: { product_id: 9, name: 'Camera' } }
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ categories: [category] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ category }), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ category }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ users: [user] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ reviews: [review] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const { adminApi } = await import('../src/api/client')
+
+    await adminApi.categories()
+    await adminApi.createCategory('New')
+    await adminApi.updateCategory(9, 'New')
+    await adminApi.deleteCategory(9)
+    await adminApi.users()
+    await adminApi.reviews()
+    await adminApi.deleteReview(3)
+
+    expect(fetchMock.mock.calls.map(([url, init]) => [url, (init as RequestInit).method ?? 'GET'])).toEqual([
+      ['https://marketkz-api.onrender.com/api/v1/admin/categories', 'GET'],
+      ['https://marketkz-api.onrender.com/api/v1/admin/categories', 'POST'],
+      ['https://marketkz-api.onrender.com/api/v1/admin/categories/9', 'PATCH'],
+      ['https://marketkz-api.onrender.com/api/v1/admin/categories/9', 'DELETE'],
+      ['https://marketkz-api.onrender.com/api/v1/admin/users', 'GET'],
+      ['https://marketkz-api.onrender.com/api/v1/admin/reviews', 'GET'],
+      ['https://marketkz-api.onrender.com/api/v1/admin/reviews/3', 'DELETE'],
+    ])
+    expect(fetchMock.mock.calls.every(([, init]) => (init as RequestInit).credentials === 'include')).toBe(true)
+  })
+
   it('uses the Render API for catalog GET and registration POST requests', async () => {
     vi.stubEnv('VITE_API_URL', 'https://marketkz-api.onrender.com/api/v1')
     const user = { user_id: 51, name: 'Test Buyer', email: 'buyer@example.kz', phone: '+77001234567', address: null, role: 'user' }

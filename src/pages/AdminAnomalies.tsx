@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { AlertTriangle, ChevronLeft, ChevronRight, RefreshCw, ShieldAlert, Wifi, WifiOff, X } from 'lucide-react'
-import { adminApi, type AnomalyFilters, type AnomalyIncident, type AnomalyPage, type AnomalySeverity, type AnomalyStatus, type AnomalyType } from '../api/client'
+import { adminApi, type AnomalyFilters, type AnomalyIncident, type AnomalyPage, type AnomalyQueueStats, type AnomalySeverity, type AnomalyStatus, type AnomalyType } from '../api/client'
 import { useAdminRealtime } from '../hooks/useAdminRealtime'
 import { btn, ErrorState } from '../components/ui'
 
@@ -23,6 +23,8 @@ export function AdminAnomalies() {
   const [filters, setFilters] = useState<AnomalyFilters>({ page: 1, pageSize: PAGE_SIZE })
   const [data, setData] = useState<AnomalyPage | null>(null)
   const [overview, setOverview] = useState<{ total: number; newCount: number; resolved: number; low: number; medium: number; high: number; critical: number } | null>(null)
+  const [queueStats, setQueueStats] = useState<AnomalyQueueStats | null>(null)
+  const [queueError, setQueueError] = useState('')
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [selected, setSelected] = useState<AnomalyIncident | null>(null)
   const [loading, setLoading] = useState(true)
@@ -58,6 +60,16 @@ export function AdminAnomalies() {
       if (active) setOverview({ total: all.total, newCount: fresh.total, resolved: resolved.total, low: all.low, medium: all.medium, high: all.high, critical: all.critical })
     }).catch((reason: unknown) => {
       if (active) setError(reason instanceof Error ? reason.message : 'Не удалось загрузить сводку.')
+    })
+    return () => { active = false }
+  }, [refreshTick])
+
+  useEffect(() => {
+    let active = true
+    adminApi.anomalyQueueStats().then((stats) => {
+      if (active) { setQueueStats(stats); setQueueError('') }
+    }).catch((reason: unknown) => {
+      if (active) setQueueError(reason instanceof Error ? reason.message : 'Не удалось загрузить состояние очереди.')
     })
     return () => { active = false }
   }, [refreshTick])
@@ -112,6 +124,14 @@ export function AdminAnomalies() {
       {overviewCards.map(([label, value, border]) => <div key={label} className={`rounded-xl border ${border} bg-white p-4`}><div className="flex items-center gap-2 text-sm text-neutral-500"><ShieldAlert size={16}/>{label}</div><div className="mt-2 text-2xl font-bold">{value}</div></div>)}
     </div>
     {overview && <div className="mb-4 flex flex-wrap gap-2" aria-label="Распределение по уровню риска">{(['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'] as const).map((severity) => <Pill key={severity} className={severityStyle[severity]}>{severityLabel[severity]} · {overview[severity.toLowerCase() as 'low' | 'medium' | 'high' | 'critical']}</Pill>)}</div>}
+
+    <section className="mb-4 rounded-xl border border-neutral-200 bg-white p-4" aria-label="Мониторинг очереди аномалий">
+      <h2 className="mb-3 text-sm font-semibold">Очередь обработки</h2>
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+        {([['Pending', queueStats?.pending ?? '—'], ['Processed', queueStats?.processed ?? '—'], ['Dead-letter', queueStats?.dead_letter ?? '—'], ['Ошибки обработки', queueStats?.processing_errors ?? '—'], ['Последняя обработка', queueStats?.last_processed_at ? dateTime(queueStats.last_processed_at) : '—']] as const).map(([label, value]) => <div key={label} className="rounded-lg bg-neutral-50 p-3"><div className="text-xs text-neutral-500">{label}</div><div className="mt-1 truncate text-lg font-semibold">{value}</div></div>)}
+      </div>
+      {queueError && <p role="alert" className="mt-3 rounded-lg bg-red-50 p-3 text-sm text-red-800">Не удалось загрузить состояние очереди: {queueError}</p>}
+    </section>
 
     <div className="mb-3 grid grid-cols-1 gap-2 rounded-xl border border-neutral-200 bg-white p-3 sm:grid-cols-2 lg:grid-cols-5">
       <select className={field} aria-label="Фильтр по уровню риска" value={filters.severity ?? ''} onChange={(event) => setFilter({ severity: (event.target.value || undefined) as AnomalySeverity | undefined })}><option value="">Все уровни риска</option>{Object.entries(severityLabel).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select>

@@ -87,6 +87,12 @@ export const ordersApi = {
 }
 
 export interface AdminOrder { order: ApiOrder; user: Pick<AuthUser, 'user_id'|'name'|'email'|'phone'|'address'>; payment: ApiPayment | null; items: ApiOrderLine[] }
+export interface AdminCategory extends Category { count: number }
+export interface AdminUser extends Pick<AuthUser, 'user_id'|'name'|'email'|'phone'|'address'> { order_count: number; review_count: number }
+export interface AdminReview {
+  review_id: number; user_id: number; product_id: number; rating: number; comment: string | null; review_date: string;
+  user: { user_id: number; name: string }; product: { product_id: number; name: string }
+}
 export interface AuditLog {
   log_id: string;
   user_id: number | null;
@@ -131,6 +137,7 @@ export interface AnomalyFilters { page?: number; pageSize?: number; severity?: A
 export interface AnomalyPage {
   incidents: AnomalyIncident[]; page: number; pageSize: number; total: number; low: number; medium: number; high: number; critical: number; totalPages: number
 }
+export interface AnomalyQueueStats { pending: number; processed: number; dead_letter: number; processing_errors: number; last_processed_at: string | null }
 export function auditWebSocketUrl(): string {
   const url = new URL(`${API_ROOT}/admin/logs/stream`, window.location.href);
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -138,6 +145,13 @@ export function auditWebSocketUrl(): string {
 }
 
 export const adminApi = {
+  async categories() { return (await request<{ categories: AdminCategory[] }>('/admin/categories')).categories },
+  async createCategory(name: string) { return (await request<{ category: AdminCategory }>('/admin/categories', { method: 'POST', body: JSON.stringify({ name }) })).category },
+  async updateCategory(id: number, name: string) { return (await request<{ category: AdminCategory }>(`/admin/categories/${id}`, { method: 'PATCH', body: JSON.stringify({ name }) })).category },
+  async deleteCategory(id: number) { await request<void>(`/admin/categories/${id}`, { method: 'DELETE' }) },
+  async users() { return (await request<{ users: AdminUser[] }>('/admin/users')).users },
+  async reviews() { return (await request<{ reviews: AdminReview[] }>('/admin/reviews')).reviews },
+  async deleteReview(id: number) { await request<void>(`/admin/reviews/${id}`, { method: 'DELETE' }) },
   async products() { return (await request<{ products: Product[] }>('/admin/products')).products },
   async createProduct(product: Omit<Product, 'product_id'>) {
     return (await request<{ product: Product }>('/admin/products', { method: 'POST', body: JSON.stringify(product) })).product
@@ -169,6 +183,7 @@ export const adminApi = {
     const query = params.toString()
     return request<AnomalyPage>(`/admin/anomalies${query ? `?${query}` : ''}`)
   },
+  async anomalyQueueStats() { return request<AnomalyQueueStats>('/admin/anomalies/queue-stats') },
   async anomaly(id: string) { return (await request<{ incident: AnomalyIncident }>(`/admin/anomalies/${encodeURIComponent(id)}`)).incident },
   async updateAnomalyStatus(id: string, status: Exclude<AnomalyStatus, 'NEW'>) {
     return (await request<{ incident: Partial<AnomalyIncident> & Pick<AnomalyIncident, 'incident_id' | 'status'> }>(`/admin/anomalies/${encodeURIComponent(id)}/status`, { method: 'PATCH', body: JSON.stringify({ status }) })).incident

@@ -58,6 +58,12 @@ function validateProduct(input: unknown): ProductInput | null {
   return { name, description: typeof description === 'string' ? description : null, price, stock_quantity: stock, category_id: categoryId };
 }
 
+function validateCategoryName(input: unknown): string | null {
+  if (typeof input !== 'string') return null;
+  const name = input.trim();
+  return name.length > 0 && name.length <= 100 ? name : null;
+}
+
 const SORT_COLUMNS = { price: 'p.price', name: 'p.name' } as const;
 type SortField = keyof typeof SORT_COLUMNS;
 type SortDirection = 'asc' | 'desc';
@@ -104,6 +110,19 @@ export function createApp(pool: Pool, options: { secureCookies?: boolean; allowL
     return next();
   });
   app.use(express.json({ limit: '100kb' }));
+
+  const requireAdmin = async (request: express.Request, response: express.Response): Promise<UserRow | null> => {
+    const user = await sessionUserFromToken(pool, cookieValue(request.headers.cookie, SESSION_COOKIE_NAME));
+    if (!user) {
+      response.status(401).json({ error: 'Требуется вход.' });
+      return null;
+    }
+    if (user.role !== 'admin') {
+      response.status(403).json({ error: 'Недостаточно прав.' });
+      return null;
+    }
+    return user;
+  };
 
   app.post('/api/v1/auth/register', async (request, response, next) => {
     const { name, email, phone, address, password } = request.body ?? {};
@@ -500,6 +519,33 @@ export function createApp(pool: Pool, options: { secureCookies?: boolean; allowL
     } catch (error) { return next(error); }
   });
 
+  app.get('/api/v1/admin/anomalies/queue-stats', async (request, response, next) => {
+    try {
+      const admin = await sessionUserFromToken(pool, cookieValue(request.headers.cookie, SESSION_COOKIE_NAME));
+      if (!admin) {
+        await auditBestEffort(pool, { action: 'ADMIN_ANOMALIES_ACCESS_DENIED', status: 'FAILURE', details: { reason: 'unauthenticated' } }, request.ip, options.auditPublisher);
+        return response.status(401).json({ error: 'Требуется вход.' });
+      }
+      if (admin.role !== 'admin') {
+        await auditBestEffort(pool, { userId: admin.user_id, action: 'ADMIN_ANOMALIES_ACCESS_DENIED', status: 'FAILURE', details: { reason: 'insufficient_role' } }, request.ip, options.auditPublisher);
+        return response.status(403).json({ error: 'Недостаточно прав.' });
+      }
+
+      const { rows } = await pool.query<{
+        pending: number; processed: number; dead_letter: number; processing_errors: number; last_processed_at: string | null;
+      }>(
+        `SELECT
+           COUNT(*) FILTER (WHERE processed_at IS NULL AND dead_lettered_at IS NULL)::int AS pending,
+           COUNT(*) FILTER (WHERE processed_at IS NOT NULL)::int AS processed,
+           COUNT(*) FILTER (WHERE dead_lettered_at IS NOT NULL)::int AS dead_letter,
+           COALESCE(SUM(attempts), 0)::int AS processing_errors,
+           MAX(processed_at)::text AS last_processed_at
+         FROM public.anomaly_event_queue`,
+      );
+      return response.json(rows[0] ?? { pending: 0, processed: 0, dead_letter: 0, processing_errors: 0, last_processed_at: null });
+    } catch (error) { return next(error); }
+  });
+
   app.get('/api/v1/admin/anomalies/:incidentId', async (request, response, next) => {
     const incidentId = positiveBigIntId(request.params.incidentId);
     if (incidentId === null) return response.status(400).json({ error: 'Некорректный ID инцидента.' });
@@ -687,6 +733,111 @@ export function createApp(pool: Pool, options: { secureCookies?: boolean; allowL
       if (adminId !== null) await auditBestEffort(pool, { userId: adminId, action: 'ORDER_STATUS_CHANGED', entityType: 'order', entityId: orderId, status: 'FAILURE', details: { reason: 'request_failed' } }, request.ip, options.auditPublisher);
       return next(error);
     } finally { client?.release(); }
+  });
+
+  app.get('/api/v1/admin/categories', async (request, response, next) => {
+    try {
+      if (!await requireAdmin(request, response)) return;
+      const { rows } = await pool.query(
+        `SELECT c.category_id, c.category_name, COUNT(p.product_id)::int AS count
+         FROM public.categories c LEFT JOIN public.products p ON p.category_id=c.category_id
+         GROUP BY c.category_id ORDER BY c.category_id`,
+      );
+      return response.json({ categories: rows });
+    } catch (error) { return next(error); }
+  });
+
+  app.post('/api/v1/admin/categories', async (request, response, next) => {
+    try {
+      if (!await requireAdmin(request, response)) return;
+      const name = validateCategoryName(request.body?.name);
+      if (!name) return response.status(400).json({ error: 'Название категории должно содержать от 1 до 100 символов.' });
+      const { rows } = await pool.query(
+        `INSERT INTO public.categories (category_name) VALUES ($1)
+         RETURNING category_id, category_name`, [name],
+      );
+      return response.status(201).json({ category: { ...rows[0], count: 0 } });
+    } catch (error) {
+      if ((error as { code?: string }).code === '23505') return response.status(409).json({ error: 'Категория с таким названием уже существует.' });
+      return next(error);
+    }
+  });
+
+  app.patch('/api/v1/admin/categories/:categoryId', async (request, response, next) => {
+    try {
+      if (!await requireAdmin(request, response)) return;
+      const categoryId = positiveInt(request.params.categoryId, 1, MAX_DATABASE_ID);
+      const name = validateCategoryName(request.body?.name);
+      if (categoryId === null) return response.status(400).json({ error: 'Некорректный ID категории.' });
+      if (!name) return response.status(400).json({ error: 'Название категории должно содержать от 1 до 100 символов.' });
+      const { rows } = await pool.query(
+        `UPDATE public.categories SET category_name=$1 WHERE category_id=$2
+         RETURNING category_id, category_name,
+           (SELECT COUNT(*)::int FROM public.products WHERE category_id=$2) AS count`, [name, categoryId],
+      );
+      if (!rows[0]) return response.status(404).json({ error: 'Категория не найдена.' });
+      return response.json({ category: rows[0] });
+    } catch (error) {
+      if ((error as { code?: string }).code === '23505') return response.status(409).json({ error: 'Категория с таким названием уже существует.' });
+      return next(error);
+    }
+  });
+
+  app.delete('/api/v1/admin/categories/:categoryId', async (request, response, next) => {
+    try {
+      if (!await requireAdmin(request, response)) return;
+      const categoryId = positiveInt(request.params.categoryId, 1, MAX_DATABASE_ID);
+      if (categoryId === null) return response.status(400).json({ error: 'Некорректный ID категории.' });
+      const { rows } = await pool.query('DELETE FROM public.categories WHERE category_id=$1 RETURNING category_id', [categoryId]);
+      if (!rows[0]) return response.status(404).json({ error: 'Категория не найдена.' });
+      return response.status(204).end();
+    } catch (error) {
+      if ((error as { code?: string }).code === '23503') return response.status(409).json({ error: 'Нельзя удалить категорию, пока в ней есть товары.' });
+      return next(error);
+    }
+  });
+
+  app.get('/api/v1/admin/users', async (request, response, next) => {
+    try {
+      if (!await requireAdmin(request, response)) return;
+      const { rows } = await pool.query(
+        `SELECT u.user_id, u.name, u.email, u.phone, u.address,
+           COUNT(DISTINCT o.order_id)::int AS order_count,
+           COUNT(DISTINCT r.review_id)::int AS review_count
+         FROM public.users u
+         LEFT JOIN public.orders o ON o.user_id=u.user_id
+         LEFT JOIN public.reviews r ON r.user_id=u.user_id
+         GROUP BY u.user_id ORDER BY u.user_id`,
+      );
+      return response.json({ users: rows });
+    } catch (error) { return next(error); }
+  });
+
+  app.get('/api/v1/admin/reviews', async (request, response, next) => {
+    try {
+      if (!await requireAdmin(request, response)) return;
+      const { rows } = await pool.query(
+        `SELECT r.review_id, r.user_id, r.product_id, r.rating, r.comment, r.review_date,
+           jsonb_build_object('user_id', u.user_id, 'name', u.name) AS "user",
+           jsonb_build_object('product_id', p.product_id, 'name', p.name) AS product
+         FROM public.reviews r
+         JOIN public.users u ON u.user_id=r.user_id
+         JOIN public.products p ON p.product_id=r.product_id
+         ORDER BY r.review_date DESC, r.review_id DESC`,
+      );
+      return response.json({ reviews: rows });
+    } catch (error) { return next(error); }
+  });
+
+  app.delete('/api/v1/admin/reviews/:reviewId', async (request, response, next) => {
+    try {
+      if (!await requireAdmin(request, response)) return;
+      const reviewId = positiveInt(request.params.reviewId, 1, MAX_DATABASE_ID);
+      if (reviewId === null) return response.status(400).json({ error: 'Некорректный ID отзыва.' });
+      const { rows } = await pool.query('DELETE FROM public.reviews WHERE review_id=$1 RETURNING review_id', [reviewId]);
+      if (!rows[0]) return response.status(404).json({ error: 'Отзыв не найден.' });
+      return response.status(204).end();
+    } catch (error) { return next(error); }
   });
 
   app.get('/api/v1/admin/products', async (request, response, next) => {
