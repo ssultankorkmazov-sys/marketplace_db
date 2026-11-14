@@ -92,6 +92,23 @@ describe('configured production API URL', () => {
     expect(fetchMock.mock.calls[0][1]).toMatchObject({ credentials: 'include' })
   })
 
+  it('uses the protected statistical anomaly status contract endpoint', async () => {
+    vi.stubEnv('VITE_API_URL', 'https://marketkz-api.onrender.com/api/v1')
+    const snapshot = {
+      detector: 'JEFFREYS_DIVERGENCE', experimental: true, operational: false,
+      detector_status: 'DISABLED', calibration_status: 'NOT_RUN', calibration_sufficient: false,
+      divergence: null, baseline: { sample_count: null, distribution: null },
+      current: { sample_count: null, distribution: null }, category_contributions: null, evaluated_at: null,
+    }
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(snapshot), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const { adminApi } = await import('../src/api/client')
+
+    expect(await adminApi.statisticalAnomalyStatus()).toEqual(snapshot)
+    expect(fetchMock.mock.calls[0][0]).toBe('https://marketkz-api.onrender.com/api/v1/admin/anomalies/statistical-status')
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ credentials: 'include' })
+  })
+
   it('loads anomaly details and changes only the requested status', async () => {
     vi.stubEnv('VITE_API_URL', 'https://marketkz-api.onrender.com/api/v1')
     const incident = { incident_id: '17', status: 'RESOLVED' }

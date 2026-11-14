@@ -18,7 +18,10 @@ async function main() {
     let realtime: ReturnType<typeof createAuditRealtime> | null = null;
     const auditPublisher = { publish(log: AuditLog) { realtime?.publish(log); } };
     const allowLocalOrigins = config.nodeEnv === 'development';
-    const server = createServer(createApp(pool, { secureCookies: config.nodeEnv === 'production', allowLocalOrigins, auditPublisher }));
+    const server = createServer(createApp(pool, {
+      secureCookies: config.nodeEnv === 'production', allowLocalOrigins, auditPublisher,
+      jeffreysDetectorEnabled: config.jeffreysDetectorEnabled,
+    }));
     realtime = createAuditRealtime(server, pool, { allowLocalOrigins });
     const anomalyConfig = loadAnomalyRuleConfig();
     console.info('Admin-denied anomaly detector configured', {

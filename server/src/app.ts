@@ -5,6 +5,7 @@ import { promisify } from 'node:util';
 import { checkDatabase, checkDatabaseReadiness } from './db.js';
 import { insertAuditLog, publishAuditLog, type AuditEventInput, type AuditPublisher } from './audit.js';
 import { ANOMALY_TYPES, type AnomalyIncident, type IncidentStatus, type IncidentSeverity } from './anomalies.js';
+import { createStatisticalAnomalySnapshot } from './jeffreysContract.js';
 
 const scrypt = promisify(scryptCallback);
 export const SESSION_COOKIE_NAME = 'marketkz_session';
@@ -86,7 +87,7 @@ function sendDatabaseError(error: unknown, next: (error?: unknown) => void) {
   next(error);
 }
 
-export function createApp(pool: Pool, options: { secureCookies?: boolean; allowLocalOrigins?: boolean; auditPublisher?: AuditPublisher } = {}) {
+export function createApp(pool: Pool, options: { secureCookies?: boolean; allowLocalOrigins?: boolean; auditPublisher?: AuditPublisher; jeffreysDetectorEnabled?: boolean } = {}) {
   const app = express();
   app.disable('x-powered-by');
   app.use((request, response, next) => {
@@ -543,6 +544,13 @@ export function createApp(pool: Pool, options: { secureCookies?: boolean; allowL
          FROM public.anomaly_event_queue`,
       );
       return response.json(rows[0] ?? { pending: 0, processed: 0, dead_letter: 0, processing_errors: 0, last_processed_at: null });
+    } catch (error) { return next(error); }
+  });
+
+  app.get('/api/v1/admin/anomalies/statistical-status', async (request, response, next) => {
+    try {
+      if (!await requireAdmin(request, response)) return;
+      return response.json(createStatisticalAnomalySnapshot(options.jeffreysDetectorEnabled ?? false));
     } catch (error) { return next(error); }
   });
 

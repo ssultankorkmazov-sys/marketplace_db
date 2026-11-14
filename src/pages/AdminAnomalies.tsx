@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
 import { AlertTriangle, ChevronLeft, ChevronRight, RefreshCw, ShieldAlert, Wifi, WifiOff, X } from 'lucide-react'
-import { adminApi, type AnomalyFilters, type AnomalyIncident, type AnomalyPage, type AnomalyQueueStats, type AnomalySeverity, type AnomalyStatus, type AnomalyType } from '../api/client'
+import { adminApi, type AnomalyFilters, type AnomalyIncident, type AnomalyPage, type AnomalyQueueStats, type AnomalySeverity, type AnomalyStatus, type AnomalyType, type StatisticalAnomalySnapshot } from '../api/client'
 import { useAdminRealtime } from '../hooks/useAdminRealtime'
 import { btn, ErrorState } from '../components/ui'
+import { StatisticalDetectorPanel } from '../components/admin/StatisticalDetectorPanel'
 
 const PAGE_SIZE = 20
 const field = 'h-10 rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none focus:border-brand'
@@ -25,6 +26,9 @@ export function AdminAnomalies() {
   const [overview, setOverview] = useState<{ total: number; newCount: number; resolved: number; low: number; medium: number; high: number; critical: number } | null>(null)
   const [queueStats, setQueueStats] = useState<AnomalyQueueStats | null>(null)
   const [queueError, setQueueError] = useState('')
+  const [statisticalStatus, setStatisticalStatus] = useState<StatisticalAnomalySnapshot | null>(null)
+  const [statisticalError, setStatisticalError] = useState('')
+  const [statisticalLoading, setStatisticalLoading] = useState(true)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [selected, setSelected] = useState<AnomalyIncident | null>(null)
   const [loading, setLoading] = useState(true)
@@ -61,6 +65,17 @@ export function AdminAnomalies() {
     }).catch((reason: unknown) => {
       if (active) setError(reason instanceof Error ? reason.message : 'Не удалось загрузить сводку.')
     })
+    return () => { active = false }
+  }, [refreshTick])
+
+  useEffect(() => {
+    let active = true
+    setStatisticalLoading(true)
+    adminApi.statisticalAnomalyStatus().then((status) => {
+      if (active) { setStatisticalStatus(status); setStatisticalError('') }
+    }).catch((reason: unknown) => {
+      if (active) setStatisticalError(reason instanceof Error ? reason.message : 'Статус недоступен.')
+    }).finally(() => { if (active) setStatisticalLoading(false) })
     return () => { active = false }
   }, [refreshTick])
 
@@ -132,6 +147,8 @@ export function AdminAnomalies() {
       </div>
       {queueError && <p role="alert" className="mt-3 rounded-lg bg-red-50 p-3 text-sm text-red-800">Не удалось загрузить состояние очереди: {queueError}</p>}
     </section>
+
+    <StatisticalDetectorPanel snapshot={statisticalStatus} loading={statisticalLoading} error={statisticalError}/>
 
     <div className="mb-3 grid grid-cols-1 gap-2 rounded-xl border border-neutral-200 bg-white p-3 sm:grid-cols-2 lg:grid-cols-5">
       <select className={field} aria-label="Фильтр по уровню риска" value={filters.severity ?? ''} onChange={(event) => setFilter({ severity: (event.target.value || undefined) as AnomalySeverity | undefined })}><option value="">Все уровни риска</option>{Object.entries(severityLabel).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select>

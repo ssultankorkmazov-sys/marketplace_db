@@ -2,6 +2,7 @@ export interface ServerConfig {
   databaseUrl: string;
   port: number;
   nodeEnv: string;
+  jeffreysDetectorEnabled: boolean;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
@@ -26,5 +27,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     throw new Error('PORT must be an integer between 1 and 65535');
   }
 
-  return { databaseUrl, port, nodeEnv: env.NODE_ENV?.trim() || 'development' };
+  const jeffreysValue = env.JEFFREYS_DETECTOR_ENABLED?.trim().toLowerCase();
+  if (jeffreysValue && jeffreysValue !== 'true' && jeffreysValue !== 'false') {
+    throw new Error('JEFFREYS_DETECTOR_ENABLED must be true or false');
+  }
+
+  return {
+    databaseUrl,
+    port,
+    nodeEnv: env.NODE_ENV?.trim() || 'development',
+    jeffreysDetectorEnabled: jeffreysValue === 'true',
+  };
 }

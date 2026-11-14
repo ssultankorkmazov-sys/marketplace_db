@@ -1,0 +1,10 @@
+{
+  "formatVersion": 1,
+  "timezone": "UTC",
+  "calibrationStartInclusive": "REPLACE_WITH_UTC_TIMESTAMP",
+  "calibrationEndExclusive": "REPLACE_WITH_UTC_TIMESTAMP",
+  "holdoutStartInclusive": "REPLACE_WITH_UTC_TIMESTAMP",
+  "holdoutEndExclusive": "REPLACE_WITH_UTC_TIMESTAMP",
+  "exportedEventCount": 0,
+  "sourceDescription": "approved_anonymized_export"
+}

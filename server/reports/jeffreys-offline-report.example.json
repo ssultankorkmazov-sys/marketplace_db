@@ -1,0 +1,49 @@
+{
+  "report_type": "JEFFREYS_OFFLINE_REPLAY",
+  "generated_at": "2026-01-01T00:00:00.000Z",
+  "data_period": {
+    "first_event_utc": "2026-01-01T00:00:00.000Z",
+    "last_event_utc": "2026-01-01T00:00:00.000Z"
+  },
+  "input_quality": {
+    "event_count": 1,
+    "identified_event_count": 1,
+    "events_without_user_id": 0,
+    "pseudonymous_user_count": 1,
+    "active_utc_days": 1,
+    "calendar_utc_days": 1,
+    "utc_days_without_events": 0,
+    "exact_duplicate_rows": 0,
+    "categories": ["AUTH", "ORDER", "ADMIN_DENIED", "PRODUCT_ADMIN", "OTHER"]
+  },
+  "configuration": {
+    "baseline_days": 30,
+    "current_window_hours": 24,
+    "evaluation_step_hours": 24,
+    "alpha": 0.5,
+    "minimum_baseline_observations": 50,
+    "minimum_current_observations": 20,
+    "threshold_quantiles": [0.95, 0.99]
+  },
+  "periods": {
+    "calibration": { "startInclusive": "2026-01-01T00:00:00.000Z", "endExclusive": "2026-01-02T00:00:00.000Z" },
+    "holdout": { "startInclusive": "2026-01-02T00:00:00.000Z", "endExclusive": "2026-01-03T00:00:00.000Z" },
+    "chronological_non_overlapping_current_windows": true,
+    "thresholds_derived_only_from_calibration": true
+  },
+  "calibration": {
+    "windows": { "total": 0, "sufficient": 0, "insufficient": 0, "excluded_outside_period": 0, "excluded_incomplete_baseline": 0, "excluded_overlapping_window": 0, "excluded_shared_boundary_event": 0 },
+    "divergence_distribution": { "count": 0, "minimum": null, "maximum": null, "mean": null, "p95": null, "p99": null },
+    "window_results": [],
+    "threshold_candidates": []
+  },
+  "holdout": {
+    "windows": { "total": 0, "sufficient": 0, "insufficient": 0, "excluded_outside_period": 0, "excluded_incomplete_baseline": 0, "excluded_overlapping_window": 0, "excluded_shared_boundary_event": 0 },
+    "divergence_distribution": { "count": 0, "minimum": null, "maximum": null, "mean": null, "p95": null, "p99": null },
+    "window_results": [],
+    "calibration_threshold_comparison": []
+  },
+  "classification_metrics": null,
+  "classification_metrics_note": "Template only: actual accepted events do not include ground-truth labels, so classification metrics are not calculated.",
+  "limitations": ["EXAMPLE ONLY — contains no real or synthetic event sequence and is not a validation result."]
+}

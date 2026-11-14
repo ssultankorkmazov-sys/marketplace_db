@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://marketkz.local/schemas/jeffreys-offline-report.schema.json",
+  "title": "MarketKZ Jeffreys Offline Replay Report",
+  "type": "object",
+  "required": ["report_type", "generated_at", "data_period", "input_quality", "configuration", "periods", "calibration", "holdout", "classification_metrics", "classification_metrics_note", "limitations"],
+  "properties": {
+    "report_type": { "const": "JEFFREYS_OFFLINE_REPLAY" },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "data_period": {
+      "type": "object", "required": ["first_event_utc", "last_event_utc"],
+      "properties": { "first_event_utc": { "type": "string", "format": "date-time" }, "last_event_utc": { "type": "string", "format": "date-time" } }
+    },
+    "input_quality": {
+      "type": "object", "required": ["event_count", "identified_event_count", "events_without_user_id", "pseudonymous_user_count", "active_utc_days", "calendar_utc_days", "utc_days_without_events", "exact_duplicate_rows", "categories"],
+      "properties": {
+        "event_count": { "type": "integer", "minimum": 1 }, "identified_event_count": { "type": "integer", "minimum": 0 },
+        "events_without_user_id": { "type": "integer", "minimum": 0 }, "pseudonymous_user_count": { "type": "integer", "minimum": 0 },
+        "active_utc_days": { "type": "integer", "minimum": 1 }, "calendar_utc_days": { "type": "integer", "minimum": 1 },
+        "utc_days_without_events": { "type": "integer", "minimum": 0 }, "exact_duplicate_rows": { "type": "integer", "minimum": 0 },
+        "categories": { "type": "array", "items": { "enum": ["AUTH", "ORDER", "ADMIN_DENIED", "PRODUCT_ADMIN", "OTHER"] } }
+      }
+    },
+    "configuration": {
+      "type": "object", "required": ["baseline_days", "current_window_hours", "evaluation_step_hours", "alpha", "minimum_baseline_observations", "minimum_current_observations", "threshold_quantiles"],
+      "properties": {
+        "baseline_days": { "type": "integer", "minimum": 1 }, "current_window_hours": { "type": "integer", "minimum": 1 },
+        "evaluation_step_hours": { "type": "integer", "minimum": 1 }, "alpha": { "type": "number", "exclusiveMinimum": 0 },
+        "minimum_baseline_observations": { "type": "integer", "minimum": 1 }, "minimum_current_observations": { "type": "integer", "minimum": 1 },
+        "threshold_quantiles": { "type": "array", "items": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 } }
+      }
+    },
+    "periods": { "type": "object" },
+    "calibration": { "$ref": "#/$defs/periodResult" },
+    "holdout": { "$ref": "#/$defs/periodResult" },
+    "classification_metrics": { "type": ["object", "null"] },
+    "classification_metrics_note": { "type": "string" },
+    "limitations": { "type": "array", "items": { "type": "string" } }
+  },
+  "$defs": {
+    "periodResult": {
+      "type": "object", "required": ["windows", "divergence_distribution", "window_results"],
+      "properties": {
+        "windows": { "type": "object" },
+        "divergence_distribution": {
+          "type": "object", "required": ["count", "minimum", "maximum", "mean", "p95", "p99"],
+          "properties": {
+            "count": { "type": "integer", "minimum": 0 }, "minimum": { "type": ["number", "null"] },
+            "maximum": { "type": ["number", "null"] }, "mean": { "type": ["number", "null"] },
+            "p95": { "type": ["number", "null"] }, "p99": { "type": ["number", "null"] }
+          }
+        },
+        "window_results": { "type": "array", "items": { "type": "object" } }
+      }
+    }
+  }
+}

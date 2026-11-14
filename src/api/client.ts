@@ -138,6 +138,18 @@ export interface AnomalyPage {
   incidents: AnomalyIncident[]; page: number; pageSize: number; total: number; low: number; medium: number; high: number; critical: number; totalPages: number
 }
 export interface AnomalyQueueStats { pending: number; processed: number; dead_letter: number; processing_errors: number; last_processed_at: string | null }
+export type StatisticalActionCategory = 'AUTH' | 'ORDER' | 'ADMIN_DENIED' | 'PRODUCT_ADMIN' | 'OTHER'
+export type StatisticalDetectorStatus = 'DISABLED' | 'NOT_INTEGRATED' | 'INSUFFICIENT_DATA' | 'AVAILABLE'
+export type StatisticalCalibrationStatus = 'NOT_RUN' | 'INSUFFICIENT_DATA' | 'CALIBRATED'
+export interface StatisticalAnomalySnapshot {
+  detector: 'JEFFREYS_DIVERGENCE'; experimental: true; operational: false
+  detector_status: StatisticalDetectorStatus; calibration_status: StatisticalCalibrationStatus; calibration_sufficient: boolean
+  divergence: number | null
+  baseline: { sample_count: number | null; distribution: Record<StatisticalActionCategory, number> | null }
+  current: { sample_count: number | null; distribution: Record<StatisticalActionCategory, number> | null }
+  category_contributions: Record<StatisticalActionCategory, number> | null
+  evaluated_at: string | null
+}
 export function auditWebSocketUrl(): string {
   const url = new URL(`${API_ROOT}/admin/logs/stream`, window.location.href);
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -184,6 +196,7 @@ export const adminApi = {
     return request<AnomalyPage>(`/admin/anomalies${query ? `?${query}` : ''}`)
   },
   async anomalyQueueStats() { return request<AnomalyQueueStats>('/admin/anomalies/queue-stats') },
+  async statisticalAnomalyStatus() { return request<StatisticalAnomalySnapshot>('/admin/anomalies/statistical-status') },
   async anomaly(id: string) { return (await request<{ incident: AnomalyIncident }>(`/admin/anomalies/${encodeURIComponent(id)}`)).incident },
   async updateAnomalyStatus(id: string, status: Exclude<AnomalyStatus, 'NEW'>) {
     return (await request<{ incident: Partial<AnomalyIncident> & Pick<AnomalyIncident, 'incident_id' | 'status'> }>(`/admin/anomalies/${encodeURIComponent(id)}/status`, { method: 'PATCH', body: JSON.stringify({ status }) })).incident

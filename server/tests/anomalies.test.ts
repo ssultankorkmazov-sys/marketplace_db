@@ -253,6 +253,38 @@ describe('anomaly outbox processing', () => {
 });
 
 describe('admin anomaly management API', () => {
+  it('returns the disabled statistical API contract only to administrators', async () => {
+    const query = vi.fn(async (sql: string) => sql.includes('FROM user_sessions') ? { rows: [admin] } : { rows: [] });
+    const app = createApp({ query } as unknown as Pool);
+    const response = await request(app).get('/api/v1/admin/anomalies/statistical-status').set('Cookie', cookie);
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({
+      detector: 'JEFFREYS_DIVERGENCE', experimental: true, operational: false,
+      detector_status: 'DISABLED', calibration_status: 'NOT_RUN', calibration_sufficient: false,
+      divergence: null,
+      baseline: { sample_count: null, distribution: null },
+      current: { sample_count: null, distribution: null },
+      category_contributions: null, evaluated_at: null,
+    });
+    expect(query.mock.calls.map(([sql]) => String(sql))).toEqual(expect.arrayContaining([expect.stringContaining('FROM user_sessions')]));
+    expect(query.mock.calls.some(([sql]) => String(sql).includes('anomaly_event_queue') || String(sql).includes('anomaly_incidents'))).toBe(false);
+  });
+
+  it('keeps the statistical endpoint protected and never marks the unintegrated detector operational', async () => {
+    const unauthorizedQuery = vi.fn(async () => ({ rows: [] }));
+    const unauthorized = createApp({ query: unauthorizedQuery } as unknown as Pool);
+    expect((await request(unauthorized).get('/api/v1/admin/anomalies/statistical-status')).status).toBe(401);
+    const userQuery = vi.fn(async (sql: string) => sql.includes('FROM user_sessions') ? { rows: [user] } : { rows: [] });
+    expect((await request(createApp({ query: userQuery } as unknown as Pool)).get('/api/v1/admin/anomalies/statistical-status').set('Cookie', cookie)).status).toBe(403);
+
+    const adminQuery = vi.fn(async (sql: string) => sql.includes('FROM user_sessions') ? { rows: [admin] } : { rows: [] });
+    const response = await request(createApp({ query: adminQuery } as unknown as Pool, { jeffreysDetectorEnabled: true }))
+      .get('/api/v1/admin/anomalies/statistical-status').set('Cookie', cookie);
+    expect(response.body.detector_status).toBe('NOT_INTEGRATED');
+    expect(response.body.operational).toBe(false);
+  });
+
   it('requires an authenticated administrator for list, detail, and status changes', async () => {
     const query = vi.fn(async (sql: string, values?: unknown[]) => sql.includes('FROM user_sessions') ? { rows: [user] } :
       sql.includes('INSERT INTO audit_logs') ? { rows: [{ log_id: '90', user_id: values?.[0] ?? null, action: values?.[1], entity_type: null, entity_id: null, status: values?.[4], details: JSON.parse(String(values?.[5])), ip_address: null, created_at: eventAt }] } : { rows: [] });

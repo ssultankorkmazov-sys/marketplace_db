@@ -4,13 +4,20 @@ import { loadConfig } from '../src/config.js';
 describe('backend configuration', () => {
   it('loads PostgreSQL URL and defaults', () => {
     expect(loadConfig({ DATABASE_URL: 'postgres://local/db' })).toEqual({
-      databaseUrl: 'postgres://local/db', port: 3001, nodeEnv: 'development',
+      databaseUrl: 'postgres://local/db', port: 3001, nodeEnv: 'development', jeffreysDetectorEnabled: false,
     });
   });
 
   it('accepts explicit valid port and environment', () => {
     expect(loadConfig({ DATABASE_URL: 'postgresql://local/db', PORT: '8080', NODE_ENV: 'test' }))
       .toMatchObject({ port: 8080, nodeEnv: 'test' });
+  });
+
+  it('keeps Jeffreys disabled by default and accepts an explicit future flag', () => {
+    expect(loadConfig({ DATABASE_URL: 'postgres://local/db' }).jeffreysDetectorEnabled).toBe(false);
+    expect(loadConfig({ DATABASE_URL: 'postgres://local/db', JEFFREYS_DETECTOR_ENABLED: 'true' }).jeffreysDetectorEnabled).toBe(true);
+    expect(loadConfig({ DATABASE_URL: 'postgres://local/db', JEFFREYS_DETECTOR_ENABLED: 'FALSE' }).jeffreysDetectorEnabled).toBe(false);
+    expect(() => loadConfig({ DATABASE_URL: 'postgres://local/db', JEFFREYS_DETECTOR_ENABLED: 'yes' })).toThrow(/must be true or false/);
   });
 
   it.each([
