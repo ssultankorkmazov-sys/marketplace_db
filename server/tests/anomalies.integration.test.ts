@@ -9,6 +9,7 @@ const integration = testDatabaseUrl ? describe : describe.skip;
 let pool: Pool;
 let account: ReturnType<typeof request.agent> | undefined;
 let userId: number | undefined;
+let exactAdminDeniedUserId: number | undefined;
 
 integration('anomaly PostgreSQL integration (TEST_DATABASE_URL only)', () => {
   beforeAll(async () => {
@@ -27,10 +28,10 @@ integration('anomaly PostgreSQL integration (TEST_DATABASE_URL only)', () => {
 
   afterAll(async () => {
     if (!pool) return;
-    if (userId) {
-      await pool.query('DELETE FROM public.anomaly_incidents WHERE subject_user_id=$1', [userId]);
-      await pool.query('DELETE FROM public.audit_logs WHERE user_id=$1', [userId]);
-      await pool.query('DELETE FROM public.users WHERE user_id=$1', [userId]);
+    for (const testUserId of [userId, exactAdminDeniedUserId].filter((id): id is number => id !== undefined)) {
+      await pool.query('DELETE FROM public.anomaly_incidents WHERE subject_user_id=$1', [testUserId]);
+      await pool.query('DELETE FROM public.audit_logs WHERE user_id=$1', [testUserId]);
+      await pool.query('DELETE FROM public.users WHERE user_id=$1', [testUserId]);
     }
     await pool.end();
   });
@@ -154,5 +155,80 @@ integration('anomaly PostgreSQL integration (TEST_DATABASE_URL only)', () => {
        WHERE subject_user_id=$1 AND status IN ('NEW', 'INVESTIGATING')`, [userId],
     );
     expect(active.rows[0].count).toBe(3);
+  });
+
+  it('detects five real ADMIN_ANOMALIES_ACCESS_DENIED route events for one user', async () => {
+    const deniedAccount = request.agent(createApp(pool));
+    const unique = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const registration = await deniedAccount.post('/api/v1/auth/register').send({
+      name: 'Admin Denied Integration', email: `anomaly_denied_${unique}@example.test`,
+      phone: `+771${String(Date.now()).slice(-7)}02`, address: null, password: 'anomaly-integration-password',
+    });
+    expect(registration.status).toBe(201);
+    exactAdminDeniedUserId = registration.body.user.user_id as number;
+
+    for (let index = 0; index < 5; index += 1) {
+      const denied = await deniedAccount.get('/api/v1/admin/anomalies');
+      expect(denied.status).toBe(403);
+    }
+
+    const { rows: auditEvents } = await pool.query<{ log_id: string; action: string; status: string; user_id: number; created_at: Date; reason: string }>(
+      `SELECT log_id::text AS log_id, action, status, user_id, created_at, details->>'reason' AS reason
+       FROM public.audit_logs WHERE user_id=$1 AND action='ADMIN_ANOMALIES_ACCESS_DENIED'
+       ORDER BY log_id`, [exactAdminDeniedUserId],
+    );
+    expect(auditEvents).toHaveLength(5);
+    expect(auditEvents.every((event) => event.status === 'FAILURE' && event.reason === 'insufficient_role')).toBe(true);
+    const logIds = auditEvents.map((event) => event.log_id);
+
+    // Give the route-generated events deterministic PostgreSQL microseconds.
+    // Passing these timestamps as strings keeps the precision that JS Date loses.
+    const timestampBase = new Date(Date.now() - 30_000).toISOString().slice(0, 19);
+    const preciseTimes = ['100001', '200002', '300003', '400004', '500005']
+      .map((fraction) => `${timestampBase}.${fraction}Z`);
+    for (let index = 0; index < logIds.length; index += 1) {
+      await pool.query('UPDATE public.audit_logs SET created_at=$2::timestamptz WHERE log_id=$1', [logIds[index], preciseTimes[index]]);
+    }
+    const persistedTimes = await pool.query<{ created_at: string }>(
+      'SELECT created_at::text AS created_at FROM public.audit_logs WHERE log_id=ANY($1::bigint[]) ORDER BY log_id', [logIds],
+    );
+    expect(persistedTimes.rows).toHaveLength(5);
+    expect(new Set(persistedTimes.rows.map((row) => row.created_at)).size).toBe(5);
+    expect(persistedTimes.rows.every((row) => /\.\d{6}/.test(row.created_at))).toBe(true);
+    const eventTimes = persistedTimes.rows.map((row) => Date.parse(row.created_at));
+    expect(Math.max(...eventTimes) - Math.min(...eventTimes)).toBeLessThanOrEqual(120_000);
+
+    const queued = await pool.query<{ count: number }>(
+      'SELECT COUNT(*)::int AS count FROM public.anomaly_event_queue WHERE log_id=ANY($1::bigint[])', [logIds],
+    );
+    expect(queued.rows[0].count).toBe(5);
+
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const pending = await pool.query<{ count: number }>(
+        'SELECT COUNT(*)::int AS count FROM public.anomaly_event_queue WHERE log_id=ANY($1::bigint[]) AND processed_at IS NULL', [logIds],
+      );
+      if (pending.rows[0].count === 0) break;
+      await processPendingAnomalyEvents(pool, DEFAULT_ANOMALY_CONFIG);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+
+    const incidentRows = await pool.query<{ count: number; event_count: number; severity: string; risk_score: number; incident_id: string }>(
+      `SELECT COUNT(*)::int AS count, MAX((evidence->>'event_count')::int)::int AS event_count,
+              MAX(severity) AS severity, MAX(risk_score)::int AS risk_score,
+              MAX(incident_id::text) AS incident_id
+       FROM public.anomaly_incidents
+       WHERE subject_user_id=$1 AND anomaly_type='REPEATED_ADMIN_ACCESS_DENIED'
+         AND status IN ('NEW', 'INVESTIGATING')`, [exactAdminDeniedUserId],
+    );
+    expect(incidentRows.rows[0]).toMatchObject({ count: 1, event_count: 5, severity: 'MEDIUM', risk_score: 65 });
+    const linked = await pool.query<{ count: number }>(
+      'SELECT COUNT(*)::int AS count FROM public.anomaly_incident_events WHERE incident_id=$1 AND log_id=ANY($2::bigint[])',
+      [incidentRows.rows[0].incident_id, logIds],
+    );
+    expect(linked.rows[0].count).toBe(5);
+    const processed = await pool.query<{ count: number }>(
+      'SELECT COUNT(*)::int AS count FROM public.anomaly_event_queue WHERE log_id=ANY($1::bigint[]) AND processed_at IS NOT NULL', [logIds],
+    );
+    expect(processed.rows[0].count).toBe(5);
   });
 });

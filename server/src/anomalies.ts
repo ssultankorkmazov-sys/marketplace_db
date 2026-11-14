@@ -236,33 +236,38 @@ async function evaluateQueueEvent(
      WHERE deduplication_key=$1 AND status IN ('NEW', 'INVESTIGATING')
      FOR UPDATE`, [key],
   );
-  const activeLastEvent = active.rows[0]?.last_event_at;
-  const evaluationTime = activeLastEvent && asMillis(activeLastEvent) > asMillis(event.created_at) ? activeLastEvent : event.created_at;
-
   let actionSql: string;
   let values: unknown[];
   if (type === 'REPEATED_FAILED_LOGINS') {
     actionSql = "action = 'LOGIN_FAILED' AND status = 'FAILURE'";
-    values = [event.user_id, evaluationTime, rule.windowSeconds];
+    values = [event.user_id, event.log_id, active.rows[0]?.incident_id ?? null, rule.windowSeconds];
   } else if (type === 'UNUSUAL_ORDER_ACTIVITY') {
     actionSql = "action = 'ORDER_CREATED' AND status = 'SUCCESS'";
-    values = [event.user_id, evaluationTime, rule.windowSeconds];
+    values = [event.user_id, event.log_id, active.rows[0]?.incident_id ?? null, rule.windowSeconds];
   } else {
-    actionSql = `action = ANY($4::text[]) AND status = 'FAILURE'
-      AND (action = ANY($5::text[]) OR details->>'reason' = 'insufficient_role')`;
-    values = [event.user_id, evaluationTime, rule.windowSeconds,
+    actionSql = `action = ANY($5::text[]) AND status = 'FAILURE'
+      AND (action = ANY($6::text[]) OR details->>'reason' = 'insufficient_role')`;
+    values = [event.user_id, event.log_id, active.rows[0]?.incident_id ?? null, rule.windowSeconds,
       ['ADMIN_LOGS_ACCESS_DENIED', 'ADMIN_ORDERS_ACCESS_DENIED', 'ADMIN_ANOMALIES_ACCESS_DENIED', 'PRODUCTS_ACCESS_DENIED', 'ORDER_STATUS_CHANGED', 'PRODUCT_CREATED', 'PRODUCT_UPDATED', 'PRODUCT_DELETED'],
       ['ADMIN_LOGS_ACCESS_DENIED', 'ADMIN_ORDERS_ACCESS_DENIED', 'ADMIN_ANOMALIES_ACCESS_DENIED', 'PRODUCTS_ACCESS_DENIED']];
   }
-  const { rows: eventRows } = await client.query<{ log_id: string; created_at: Date | string }>(
-    `SELECT log_id::text AS log_id, created_at
-     FROM public.audit_logs
-     WHERE user_id=$1 AND ${actionSql}
-       AND created_at >= $2::timestamptz - ($3::int * INTERVAL '1 second')
-       AND created_at <= $2::timestamptz
-     ORDER BY created_at, log_id`, values,
+  const { rows: eventRows } = await client.query<{ log_id: string; created_at: string }>(
+    `WITH evaluation AS (
+       SELECT GREATEST(anchor.created_at, COALESCE(active.last_event_at, anchor.created_at)) AS evaluation_time
+       FROM public.audit_logs anchor
+       LEFT JOIN public.anomaly_incidents active ON active.incident_id=$3
+       WHERE anchor.log_id=$2
+     )
+     SELECT audit.log_id::text AS log_id, audit.created_at::text AS created_at
+     FROM public.audit_logs audit CROSS JOIN evaluation
+     WHERE audit.user_id=$1 AND ${actionSql}
+       AND audit.created_at >= evaluation.evaluation_time - ($4::int * INTERVAL '1 second')
+       AND audit.created_at <= evaluation.evaluation_time
+     ORDER BY audit.created_at, audit.log_id`, values,
   );
-  const windowEvents = selectWindowEvents(eventRows, evaluationTime, rule.windowSeconds);
+  // PostgreSQL applies both bounds using its full TIMESTAMPTZ precision. Do not
+  // round-trip timestamps through JavaScript Date before counting these rows.
+  const windowEvents = eventRows;
 
   let newEvents = windowEvents;
   if (!active.rows[0] && windowEvents.length) {
@@ -277,14 +282,30 @@ async function evaluateQueueEvent(
     newEvents = windowEvents.filter((row) => !previouslyUsed.has(row.log_id));
   }
 
+  const eligibleEvents = active.rows[0] ? windowEvents : newEvents;
+  if (type === 'REPEATED_ADMIN_ACCESS_DENIED') {
+    const reason = windowEvents.length === 0
+      ? 'NO_MATCHING_EVENTS_IN_WINDOW'
+      : eligibleEvents.length < rule.threshold
+        ? eligibleEvents.length < windowEvents.length ? 'BELOW_THRESHOLD_AFTER_DEDUPLICATION' : 'BELOW_THRESHOLD'
+        : 'THRESHOLD_MET';
+    console.info('Admin-denied anomaly evaluation', {
+      event_count: windowEvents.length,
+      eligible_count: eligibleEvents.length,
+      threshold: rule.threshold,
+      window_seconds: rule.windowSeconds,
+      reason,
+    });
+  }
+
   if (newEvents.length < rule.threshold && !active.rows[0]) return null;
   if (!windowEvents.length) return null;
   const evidenceEvents = active.rows[0] ? windowEvents : newEvents;
   if (evidenceEvents.length < rule.threshold) return null;
 
   const eventIds = evidenceEvents.map((row) => row.log_id);
-  const firstEventAt = new Date(Math.min(...evidenceEvents.map((row) => asMillis(row.created_at)))).toISOString();
-  const lastEventAt = new Date(Math.max(...evidenceEvents.map((row) => asMillis(row.created_at)))).toISOString();
+  const firstEventAt = evidenceEvents[0].created_at;
+  const lastEventAt = evidenceEvents[evidenceEvents.length - 1].created_at;
   const riskScore = calculateRiskScore(type, evidenceEvents.length, rule.threshold);
   const explanation = `${rule.description} Evidence: ${evidenceEvents.length} events in ${rule.windowSeconds} seconds; configured threshold: ${rule.threshold}.`;
   const evidence = {

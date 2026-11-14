@@ -60,7 +60,7 @@ describe('anomaly detection rules and recommendations', () => {
   });
 });
 
-function fakeWorkerPool(options: { matchingEvents: number; active?: AnomalyIncident; failure?: boolean; action?: 'LOGIN_FAILED' | 'ADMIN_LOGS_ACCESS_DENIED' | 'ORDER_CREATED' }) {
+function fakeWorkerPool(options: { matchingEvents: number; active?: AnomalyIncident; failure?: boolean; action?: 'LOGIN_FAILED' | 'ADMIN_LOGS_ACCESS_DENIED' | 'ADMIN_ANOMALIES_ACCESS_DENIED' | 'ORDER_CREATED' }) {
   const calls: { sql: string; values?: unknown[] }[] = [];
   let claimed = false;
   let currentIncident = options.active;
@@ -81,11 +81,11 @@ function fakeWorkerPool(options: { matchingEvents: number; active?: AnomalyIncid
     if (sql.includes('FROM public.audit_logs WHERE log_id=$1')) {
       if (failure) throw Object.assign(new Error('test database failure'), { code: 'XX000' });
       const action = options.action ?? 'LOGIN_FAILED';
-      return { rows: [{ log_id: String(nextLog), user_id: 8, action, status: action === 'ORDER_CREATED' ? 'SUCCESS' : 'FAILURE', details: { reason: action === 'ADMIN_LOGS_ACCESS_DENIED' ? 'insufficient_role' : 'invalid_credentials' }, created_at: eventAt }] };
+      return { rows: [{ log_id: String(nextLog), user_id: 8, action, status: action === 'ORDER_CREATED' ? 'SUCCESS' : 'FAILURE', details: { reason: action.includes('ADMIN_') ? 'insufficient_role' : 'invalid_credentials' }, created_at: eventAt }] };
     }
-    if (sql.includes('FROM public.audit_logs') && sql.includes('created_at >= $2')) {
+    if (sql.includes('WITH evaluation AS')) {
       const n = options.matchingEvents;
-      return { rows: Array.from({ length: n }, (_, index) => ({ log_id: String(index + 1), created_at: new Date(eventAt.getTime() - (n - index - 1) * 10_000) })) };
+      return { rows: Array.from({ length: n }, (_, index) => ({ log_id: String(index + 1), created_at: new Date(eventAt.getTime() - (n - index - 1) * 10_000).toISOString() })) };
     }
     if (sql.includes('FROM public.anomaly_incidents') && sql.includes('FOR UPDATE')) return { rows: currentIncident ? [currentIncident] : [] };
     if (sql.includes('FROM public.anomaly_incident_events event')) return { rows: [] };
@@ -135,13 +135,48 @@ describe('anomaly outbox processing', () => {
   it.each([
     ['REPEATED_FAILED_LOGINS', 'LOGIN_FAILED'],
     ['REPEATED_ADMIN_ACCESS_DENIED', 'ADMIN_LOGS_ACCESS_DENIED'],
+    ['REPEATED_ADMIN_ACCESS_DENIED', 'ADMIN_ANOMALIES_ACCESS_DENIED'],
     ['UNUSUAL_ORDER_ACTIVITY', 'ORDER_CREATED'],
   ] as const)('detects %s at its configured default threshold', async (type, action) => {
     const fake = fakeWorkerPool({ matchingEvents: 5, action });
+    vi.spyOn(console, 'info').mockImplementation(() => undefined);
     await processPendingAnomalyEvents(fake.pool);
     const inserted = fake.calls.find(({ sql }) => sql.includes('INSERT INTO public.anomaly_incidents'))!;
     expect(inserted.values?.[0]).toBe(type);
     expect(inserted.values?.[1]).toBe(8);
+    if (type === 'REPEATED_ADMIN_ACCESS_DENIED') {
+      const matchingQuery = fake.calls.find(({ sql }) => sql.includes('WITH evaluation AS'))!;
+      expect(String(matchingQuery.sql)).toContain("status = 'FAILURE'");
+      expect(matchingQuery.values?.[4]).toContain(action);
+      expect(matchingQuery.values?.[5]).toContain(action);
+    }
+  });
+
+  it('computes exact window bounds in PostgreSQL using the triggering audit row and active incident', async () => {
+    const fake = fakeWorkerPool({ matchingEvents: 5, active: incident, action: 'ADMIN_ANOMALIES_ACCESS_DENIED' });
+    vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    await processPendingAnomalyEvents(fake.pool);
+
+    const matchingQuery = fake.calls.find(({ sql }) => sql.includes('WITH evaluation AS'))!;
+    expect(matchingQuery.sql).toContain('GREATEST(anchor.created_at, COALESCE(active.last_event_at, anchor.created_at))');
+    expect(matchingQuery.sql).toContain('audit.created_at >= evaluation.evaluation_time - ($4::int * INTERVAL');
+    expect(matchingQuery.sql).toContain('audit.created_at <= evaluation.evaluation_time');
+    expect(matchingQuery.values?.[1]).toBe('5');
+    expect(matchingQuery.values?.[2]).toBe(incident.incident_id);
+    expect(matchingQuery.values?.[3]).toBe(120);
+    expect(matchingQuery.values?.[1]).not.toBeInstanceOf(Date);
+  });
+
+  it('logs only aggregate threshold diagnostics for admin-denied evaluation', async () => {
+    const fake = fakeWorkerPool({ matchingEvents: 5, action: 'ADMIN_ANOMALIES_ACCESS_DENIED' });
+    const info = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    await processPendingAnomalyEvents(fake.pool);
+
+    expect(info).toHaveBeenCalledWith('Admin-denied anomaly evaluation', {
+      event_count: 5, eligible_count: 5, threshold: 5, window_seconds: 120, reason: 'THRESHOLD_MET',
+    });
+    expect(JSON.stringify(info.mock.calls)).not.toContain('user_id');
+    expect(JSON.stringify(info.mock.calls)).not.toContain('email');
   });
 
   it('upserts an active incident instead of creating a duplicate when matching events repeat', async () => {
@@ -150,6 +185,21 @@ describe('anomaly outbox processing', () => {
     const upsert = fake.calls.find(({ sql }) => sql.includes('INSERT INTO public.anomaly_incidents'))?.sql ?? '';
     expect(upsert).toContain('ON CONFLICT (deduplication_key) WHERE status IN');
     expect(fake.calls.find(({ sql }) => sql.includes('INSERT INTO public.anomaly_incident_events'))?.values?.[1]).toEqual(['1', '2', '3', '4', '5', '6']);
+  });
+
+  it('updates an existing active admin-denied incident for repeated ADMIN_ANOMALIES_ACCESS_DENIED events', async () => {
+    const activeAdminDenied = {
+      ...incident,
+      anomaly_type: 'REPEATED_ADMIN_ACCESS_DENIED' as const,
+      deduplication_key: 'REPEATED_ADMIN_ACCESS_DENIED:user:8',
+    };
+    const fake = fakeWorkerPool({ matchingEvents: 5, active: activeAdminDenied, action: 'ADMIN_ANOMALIES_ACCESS_DENIED' });
+    vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    await processPendingAnomalyEvents(fake.pool);
+
+    const upsert = fake.calls.find(({ sql }) => sql.includes('INSERT INTO public.anomaly_incidents'))?.sql ?? '';
+    expect(upsert).toContain('ON CONFLICT (deduplication_key) WHERE status IN');
+    expect(fake.calls.find(({ sql }) => sql.includes('INSERT INTO public.anomaly_incidents'))?.values?.[0]).toBe('REPEATED_ADMIN_ACCESS_DENIED');
   });
 
   it('keeps a failed event queued and schedules a retry without exposing database details', async () => {

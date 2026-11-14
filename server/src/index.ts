@@ -20,7 +20,12 @@ async function main() {
     const allowLocalOrigins = config.nodeEnv === 'development';
     const server = createServer(createApp(pool, { secureCookies: config.nodeEnv === 'production', allowLocalOrigins, auditPublisher }));
     realtime = createAuditRealtime(server, pool, { allowLocalOrigins });
-    const anomalyWorker = startAnomalyWorker(pool, loadAnomalyRuleConfig(), realtime);
+    const anomalyConfig = loadAnomalyRuleConfig();
+    console.info('Admin-denied anomaly detector configured', {
+      threshold: anomalyConfig.adminDeniedThreshold,
+      window_seconds: anomalyConfig.adminDeniedWindowSeconds,
+    });
+    const anomalyWorker = startAnomalyWorker(pool, anomalyConfig, realtime);
     server.listen(config.port, () => {
       console.log(`MarketKZ backend listening on port ${config.port}`);
     });
