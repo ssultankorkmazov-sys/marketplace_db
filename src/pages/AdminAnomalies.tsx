@@ -148,7 +148,7 @@ export function AdminAnomalies() {
       {queueError && <p role="alert" className="mt-3 rounded-lg bg-red-50 p-3 text-sm text-red-800">Не удалось загрузить состояние очереди: {queueError}</p>}
     </section>
 
-    <StatisticalDetectorPanel snapshot={statisticalStatus} loading={statisticalLoading} error={statisticalError}/>
+    <StatisticalDetectorPanel snapshot={statisticalStatus} loading={statisticalLoading} error={statisticalError} refreshKey={refreshTick}/>
 
     <div className="mb-3 grid grid-cols-1 gap-2 rounded-xl border border-neutral-200 bg-white p-3 sm:grid-cols-2 lg:grid-cols-5">
       <select className={field} aria-label="Фильтр по уровню риска" value={filters.severity ?? ''} onChange={(event) => setFilter({ severity: (event.target.value || undefined) as AnomalySeverity | undefined })}><option value="">Все уровни риска</option>{Object.entries(severityLabel).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select>

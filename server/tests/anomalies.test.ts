@@ -358,6 +358,113 @@ describe('admin anomaly management API', () => {
     expect(String(statsCall[0])).not.toContain('last_error');
   });
 
+  it('returns safe Shadow Mode status counts to admins, including an empty result set', async () => {
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes('FROM user_sessions')) return { rows: [admin] };
+      if (sql.includes('to_regclass')) return { rows: [{ checkpoint: 'jeffreys_shadow_checkpoint', evaluations: 'jeffreys_shadow_evaluations', incidents: 'anomaly_incidents' }] };
+      return { rows: [{ profile_version: null, latest_evaluation_at: null, sufficient_data: 0, insufficient_data: 0, work_limit_exceeded: 0, evaluation_error: 0 }] };
+    });
+    const response = await request(createApp({ query } as unknown as Pool)).get('/api/v1/admin/anomalies/shadow/status').set('Cookie', cookie);
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({
+      experimental: true, operational: false, enabled: false, storage_available: true,
+      profile_version: null, latest_evaluation_at: null,
+      evaluation_counts: { SUFFICIENT_DATA: 0, INSUFFICIENT_DATA: 0, WORK_LIMIT_EXCEEDED: 0, EVALUATION_ERROR: 0 },
+    });
+    expect(JSON.stringify(response.body)).not.toMatch(/configuration_signature|last_subject_user_id|email|ip_address|details/i);
+  });
+
+  it('protects both Shadow Mode endpoints from unauthenticated and non-admin users', async () => {
+    const unauthorizedQuery = vi.fn(async () => ({ rows: [] }));
+    const unauthorized = createApp({ query: unauthorizedQuery } as unknown as Pool);
+    for (const path of ['/api/v1/admin/anomalies/shadow/status', '/api/v1/admin/anomalies/shadow/evaluations']) {
+      expect((await request(unauthorized).get(path)).status).toBe(401);
+    }
+    const userQuery = vi.fn(async (sql: string) => sql.includes('FROM user_sessions') ? { rows: [user] } : { rows: [] });
+    const userApp = createApp({ query: userQuery } as unknown as Pool);
+    for (const path of ['/api/v1/admin/anomalies/shadow/status', '/api/v1/admin/anomalies/shadow/evaluations']) {
+      expect((await request(userApp).get(path).set('Cookie', cookie)).status).toBe(403);
+    }
+    expect(userQuery.mock.calls.some(([sql]) => String(sql).includes('jeffreys_shadow_'))).toBe(false);
+  });
+
+  it('paginates and filters Shadow Mode history while returning only safe measurements and temporal incident matches', async () => {
+    const evaluation = {
+      evaluation_id: '123', profile_version: 'shadow-v1', subject_user_id: 8,
+      evaluated_at: '2026-11-01T10:00:00.000Z', baseline_start_at: '2026-10-01T10:00:00.000Z',
+      baseline_end_at: '2026-10-31T10:00:00.000Z', current_start_at: '2026-10-31T10:00:00.000Z',
+      current_end_at: '2026-11-01T10:00:00.000Z', baseline_observations: 60, current_observations: 24,
+      baseline_distribution: { AUTH: 0.5 }, current_distribution: { ORDER: 0.7 }, divergence: 0.42,
+      category_contributions: { AUTH: 0.1 }, evaluation_status: 'SUFFICIENT_DATA', sample_counts_capped: false,
+      recorded_at: '2026-11-01T10:00:01.000Z',
+      matching_incidents: [{ incident_id: '41', anomaly_type: 'REPEATED_FAILED_LOGINS', status: 'NEW', severity: 'MEDIUM', detected_at: '2026-10-31T12:00:00.000Z', correlation_basis: 'SAME_USER_AND_OVERLAPPING_EVENT_TIME' }],
+    };
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes('FROM user_sessions')) return { rows: [admin] };
+      if (sql.includes('to_regclass')) return { rows: [{ evaluations: 'jeffreys_shadow_evaluations', incidents: 'anomaly_incidents' }] };
+      if (sql.includes('COUNT(*)::int AS total FROM public.jeffreys_shadow_evaluations')) return { rows: [{ total: 1 }] };
+      if (sql.includes('FROM public.jeffreys_shadow_evaluations evaluation')) return { rows: [evaluation] };
+      return { rows: [] };
+    });
+    const response = await request(createApp({ query } as unknown as Pool))
+      .get('/api/v1/admin/anomalies/shadow/evaluations?page=2&pageSize=5&profile=shadow-v1&userId=8&status=SUFFICIENT_DATA&from=2026-10-31&to=2026-11-01')
+      .set('Cookie', cookie);
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({ page: 2, pageSize: 5, total: 1, totalPages: 1, evaluations: [evaluation] });
+    const read = query.mock.calls.find(([sql]) => String(sql).includes('LEFT JOIN LATERAL') && String(sql).includes('FROM public.jeffreys_shadow_evaluations evaluation'))!;
+    expect(read[1]).toEqual(['shadow-v1', 8, 'SUFFICIENT_DATA', '2026-10-31', '2026-11-01', 5, 5]);
+    expect(String(read[0])).toContain('incident.subject_user_id=evaluation.subject_user_id');
+    expect(String(read[0])).toContain('incident.first_event_at < evaluation.current_end_at');
+    expect(String(read[0])).toContain('incident.last_event_at >= evaluation.current_start_at');
+    expect(String(read[0])).not.toMatch(/audit_logs|details|ip_address|email|profile_config|configuration_signature|last_subject_user_id/i);
+    expect(JSON.stringify(response.body)).not.toMatch(/audit_logs|details|ip_address|email|profile_config|configuration_signature|last_subject_user_id/i);
+  });
+
+  it('returns an empty paginated Shadow Mode history without errors', async () => {
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes('FROM user_sessions')) return { rows: [admin] };
+      if (sql.includes('to_regclass')) return { rows: [{ evaluations: 'jeffreys_shadow_evaluations', incidents: 'anomaly_incidents' }] };
+      if (sql.includes('COUNT(*)::int AS total FROM public.jeffreys_shadow_evaluations')) return { rows: [{ total: 0 }] };
+      return { rows: [] };
+    });
+    const response = await request(createApp({ query } as unknown as Pool)).get('/api/v1/admin/anomalies/shadow/evaluations').set('Cookie', cookie);
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ evaluations: [], page: 1, pageSize: 20, total: 0, totalPages: 0 });
+  });
+
+  it.each([
+    '/api/v1/admin/anomalies/shadow/evaluations?page=0',
+    '/api/v1/admin/anomalies/shadow/evaluations?pageSize=101',
+    '/api/v1/admin/anomalies/shadow/evaluations?profile=bad%20profile',
+    '/api/v1/admin/anomalies/shadow/evaluations?userId=0',
+    '/api/v1/admin/anomalies/shadow/evaluations?status=AVAILABLE',
+    '/api/v1/admin/anomalies/shadow/evaluations?from=2026-02-30',
+    '/api/v1/admin/anomalies/shadow/evaluations?from=2026-11-02&to=2026-11-01',
+    '/api/v1/admin/anomalies/shadow/evaluations?unexpected=value',
+    '/api/v1/admin/anomalies/shadow/evaluations?status=SUFFICIENT_DATA&status=INSUFFICIENT_DATA',
+  ])('rejects invalid Shadow Mode history query %s', async (path) => {
+    const query = vi.fn(async (sql: string) => sql.includes('FROM user_sessions') ? { rows: [admin] } : { rows: [] });
+    const response = await request(createApp({ query } as unknown as Pool)).get(path).set('Cookie', cookie);
+    expect(response.status).toBe(400);
+    expect(query.mock.calls.some(([sql]) => String(sql).includes('to_regclass'))).toBe(false);
+  });
+
+  it('returns a sanitized unavailable response when Shadow Mode tables are missing', async () => {
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes('FROM user_sessions')) return { rows: [admin] };
+      if (sql.includes('to_regclass')) return { rows: [{ checkpoint: null, evaluations: null, incidents: null }] };
+      return { rows: [] };
+    });
+    const app = createApp({ query } as unknown as Pool);
+    const status = await request(app).get('/api/v1/admin/anomalies/shadow/status').set('Cookie', cookie);
+    const history = await request(app).get('/api/v1/admin/anomalies/shadow/evaluations').set('Cookie', cookie);
+    expect(status.status).toBe(503);
+    expect(history.status).toBe(503);
+    expect(status.body).toEqual({ error: 'Shadow Mode storage is unavailable.' });
+    expect(history.body).toEqual(status.body);
+    expect(JSON.stringify(history.body)).not.toMatch(/relation|sql|database|table name/i);
+  });
+
   it('updates a non-terminal incident in a transaction and writes an audit event', async () => {
     const calls: { sql: string; values?: unknown[] }[] = [];
     const clientQuery = vi.fn(async (sql: string, values?: unknown[]) => {

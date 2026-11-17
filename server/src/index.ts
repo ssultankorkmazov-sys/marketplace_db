@@ -7,6 +7,7 @@ import { checkDatabase, createPool } from './db.js';
 import { createAuditRealtime } from './realtime.js';
 import type { AuditLog } from './audit.js';
 import { loadAnomalyRuleConfig, startAnomalyWorker } from './anomalies.js';
+import { loadJeffreysShadowConfig, startJeffreysShadowProcessor } from './jeffreysShadow.js';
 
 dotenv.config({ path: resolve(process.cwd(), '../.env') });
 
@@ -21,6 +22,7 @@ async function main() {
     const server = createServer(createApp(pool, {
       secureCookies: config.nodeEnv === 'production', allowLocalOrigins, auditPublisher,
       jeffreysDetectorEnabled: config.jeffreysDetectorEnabled,
+      jeffreysShadowModeEnabled: config.jeffreysShadowModeEnabled,
     }));
     realtime = createAuditRealtime(server, pool, { allowLocalOrigins });
     const anomalyConfig = loadAnomalyRuleConfig();
@@ -29,11 +31,17 @@ async function main() {
       window_seconds: anomalyConfig.adminDeniedWindowSeconds,
     });
     const anomalyWorker = startAnomalyWorker(pool, anomalyConfig, realtime);
+    const jeffreysShadowProcessor = config.jeffreysShadowModeEnabled
+      ? startJeffreysShadowProcessor(pool, true, loadJeffreysShadowConfig())
+      : null;
     server.listen(config.port, () => {
       console.log(`MarketKZ backend listening on port ${config.port}`);
     });
 
-    const shutdown = () => { void anomalyWorker.close().finally(() => realtime?.close().finally(() => server.close(() => void pool.end()))); };
+    const shutdown = () => {
+      void Promise.all([anomalyWorker.close(), jeffreysShadowProcessor?.close() ?? Promise.resolve()])
+        .finally(() => realtime?.close().finally(() => server.close(() => void pool.end())));
+    };
     process.on('SIGINT', shutdown);
     process.on('SIGTERM', shutdown);
   } catch (error) {

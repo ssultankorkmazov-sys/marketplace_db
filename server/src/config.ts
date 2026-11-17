@@ -3,6 +3,7 @@ export interface ServerConfig {
   port: number;
   nodeEnv: string;
   jeffreysDetectorEnabled: boolean;
+  jeffreysShadowModeEnabled: boolean;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
@@ -31,11 +32,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
   if (jeffreysValue && jeffreysValue !== 'true' && jeffreysValue !== 'false') {
     throw new Error('JEFFREYS_DETECTOR_ENABLED must be true or false');
   }
+  const jeffreysShadowValue = env.JEFFREYS_SHADOW_MODE_ENABLED?.trim().toLowerCase();
+  if (jeffreysShadowValue && jeffreysShadowValue !== 'true' && jeffreysShadowValue !== 'false') {
+    throw new Error('JEFFREYS_SHADOW_MODE_ENABLED must be true or false');
+  }
 
   return {
     databaseUrl,
     port,
     nodeEnv: env.NODE_ENV?.trim() || 'development',
     jeffreysDetectorEnabled: jeffreysValue === 'true',
+    jeffreysShadowModeEnabled: jeffreysShadowValue === 'true',
   };
 }

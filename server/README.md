@@ -26,7 +26,9 @@ The API uses the seven-table schema and seed data in `../db/marketplace_db.sql`.
 
    `GET http://localhost:3001/api/health` checks the live database connection. Catalog endpoints are under `/api/v1`.
 
-`db:migrate` adds password/role fields, a server session table, and nullable order delivery snapshots. It preserves existing marketplace records. Existing seeded users have no password hash and cannot use the old demo password. A trusted operator must assign admin role to a verified account; never grant it at registration. For integration tests, provision a separate database whose name ends in `_test`, import the fixture there using the guarded command above with `DATABASE_URL` pointed at that test database, then set `TEST_DATABASE_URL` to that URL before `npm --prefix server test`. Integration tests never initialize or modify the database themselves. Without `TEST_DATABASE_URL`, only the real-PostgreSQL integration suite is skipped; API unit tests do not claim database connectivity.
+`db:migrate` reads only `TEST_DATABASE_URL` and accepts exactly localhost/127.0.0.1:5432/`market_db_test`. It never loads `.env` or falls back to `DATABASE_URL`. For a restored backup used to rehearse migrations, use the separate `db:migrate:copy` command with `MIGRATION_COPY_DATABASE_URL`; it accepts only localhost/127.0.0.1:5432/`market_db_migration_test`, and additionally requires the active TCP server address to be `127.0.0.1` and port `5432`. Neither runner can migrate `market_db`, and the existing `db:migrate` target remains unchanged. Integration tests use only `TEST_DATABASE_URL` and never initialize or migrate a database.
+
+The restored-copy rehearsal applies migration files 001–007 in order through the same transaction and advisory lock used by the regular runner. Existing complete legacy schemas for 001 and 002 are recorded without rerunning their SQL; incomplete or incompatible definitions cause a rollback. The runner does not load migration URLs from `.env` and does not use generic database URL variables as fallbacks.
 
 ## Catalog API
 
@@ -73,6 +75,22 @@ Apply additive migrations `004_anomaly_incidents.sql` and `005_anomaly_queue_dea
 The initial thresholds default to five events: failed logins per known account in 120 seconds, authenticated administrative access denials per account in 120 seconds, and created orders per account in 300 seconds. Configure them with `ANOMALY_FAILED_LOGIN_THRESHOLD`, `ANOMALY_FAILED_LOGIN_WINDOW_SECONDS`, `ANOMALY_ADMIN_DENIED_THRESHOLD`, `ANOMALY_ADMIN_DENIED_WINDOW_SECONDS`, `ANOMALY_ORDER_THRESHOLD`, and `ANOMALY_ORDER_WINDOW_SECONDS`. `ANOMALY_POLL_INTERVAL_MS` defaults to 5000. Values are validated on startup. Risk scores are deterministic: base scores are 55, 65, and 50 for the three respective rules, plus 10 per event above threshold, capped at 100. Severity is MEDIUM 40–69, HIGH 70–89, CRITICAL 90–100 (LOW is reserved for future lower-scored detections). Recommendations are rule-based and require administrator judgment; no account or business action is taken automatically.
 
 The experimental Jeffreys Divergence dashboard/API contract is not connected to the anomaly worker and cannot create incidents. `JEFFREYS_DETECTOR_ENABLED` defaults to `false`; the current endpoint remains non-operational even when set to `true` and reports `NOT_INTEGRATED`. Do not enable it as a production detector: the flag is reserved for a future implementation after real-data calibration and review. The contract endpoint is `GET /api/v1/admin/anomalies/statistical-status` and requires an administrator session.
+
+### Jeffreys Shadow Mode (observational, local evaluation only)
+
+Migration `006_jeffreys_shadow_mode.sql` adds a singleton checkpoint and `jeffreys_shadow_evaluations`. The shadow processor is a separate lifecycle from the rule worker, reads only bounded `SELECT` windows from `audit_logs`, and writes only those two tables. It does not use or update `anomaly_event_queue`, create incidents, or change any rule output. `JEFFREYS_SHADOW_MODE_ENABLED` defaults to `false`; when false, the processor does no database work. The existing `JEFFREYS_DETECTOR_ENABLED` flag and statistical-status endpoint contract are separate and unchanged.
+
+Defaults are a 30-day baseline, 24-hour current window, daily evaluation cadence, one-hour allowed-lateness grace, alpha 0.5, minimums 50/20, at most 25 users per tick and 2,000 read events per window. A window exceeding the read cap is stored as `WORK_LIMIT_EXCEEDED` without a divergence. Event-time windows are half-open and ordered by `created_at`; a second account sweep catches rows committed during the first sweep. Rows that arrive after that verification pass and have timestamps in a finalized window are not retroactively replayed. Changing statistical profile parameters requires incrementing `JEFFREYS_SHADOW_PROFILE_VERSION`; the stored signature prevents silently reusing a checkpoint with different settings.
+
+To evaluate locally, first set `TEST_DATABASE_URL` to the local database `market_db_test`, then apply pending migrations with the guarded command `npm --prefix server run db:migrate`. This runner refuses any other database and must not be used for production. In the backend PowerShell terminal, explicitly enable the separate processor:
+
+```powershell
+$env:JEFFREYS_SHADOW_MODE_ENABLED = 'true'
+$env:JEFFREYS_SHADOW_PROFILE_VERSION = 'shadow-v1'
+npm --prefix server run dev
+```
+
+Optional settings are `JEFFREYS_SHADOW_BASELINE_WINDOW_SECONDS`, `JEFFREYS_SHADOW_CURRENT_WINDOW_SECONDS`, `JEFFREYS_SHADOW_EVALUATION_CADENCE_SECONDS`, `JEFFREYS_SHADOW_ALLOWED_LATENESS_SECONDS`, `JEFFREYS_SHADOW_ALPHA`, `JEFFREYS_SHADOW_MIN_BASELINE_OBSERVATIONS`, `JEFFREYS_SHADOW_MIN_CURRENT_OBSERVATIONS`, `JEFFREYS_SHADOW_MAX_SUBJECTS_PER_TICK`, `JEFFREYS_SHADOW_MAX_EVENTS_PER_WINDOW`, and `JEFFREYS_SHADOW_POLL_INTERVAL_MS`. These produce measurements only; they do not define an anomaly threshold. Keep the mode off in production until the historical sample and calibration limitations are resolved.
 
 ### Jeffreys research materials
 

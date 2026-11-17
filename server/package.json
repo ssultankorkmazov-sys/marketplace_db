@@ -5,12 +5,14 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node scripts/package-replenishment-report.mjs",
     "start": "node dist/index.js",
     "test": "vitest run",
     "db:init": "tsx scripts/init-db.ts",
     "db:migrate": "node --require ./scripts/node-os-userinfo-fallback.cjs --import tsx/esm scripts/migrate.ts",
-    "test:integration": "vitest run tests/integration.test.ts tests/anomalies.integration.test.ts"
+    "db:migrate:copy": "node --require ./scripts/node-os-userinfo-fallback.cjs --import tsx/esm scripts/migrate-copy.ts",
+    "db:migrate:main": "node --require ./scripts/node-os-userinfo-fallback.cjs --import tsx/esm scripts/migrate-main.ts",
+    "test:integration": "vitest run tests/integration.test.ts tests/anomalies.integration.test.ts tests/jeffreys-shadow.integration.test.ts tests/replenishment-history.integration.test.ts"
   },
   "dependencies": {
     "dotenv": "^16.4.7",

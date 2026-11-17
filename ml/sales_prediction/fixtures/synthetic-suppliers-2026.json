@@ -1,0 +1,70 @@
+{
+  "metadata": {
+    "source": "SYNTHETIC",
+    "seed": 20261117,
+    "as_of_date": "2026-06-30",
+    "currency": "KZT",
+    "note": "Demonstration-only supplier offers, inventory snapshot, and inbound shipments. No MarketKZ product or stock records are represented."
+  },
+  "suppliers": [
+    { "supplier_id": "SYN-SUP-001", "name": "Steppe Wholesale", "source": "SYNTHETIC" },
+    { "supplier_id": "SYN-SUP-002", "name": "Alatau Distribution", "source": "SYNTHETIC" },
+    { "supplier_id": "SYN-SUP-003", "name": "Nomad Supply", "source": "SYNTHETIC" },
+    { "supplier_id": "SYN-SUP-004", "name": "Eurasia Logistics", "source": "SYNTHETIC" }
+  ],
+  "supplier_products": [
+    { "supplier_id": "SYN-SUP-001", "synthetic_product_id": "SYN-P001", "lead_time_days": 7, "minimum_order_quantity": 4, "pack_size": 2, "purchase_price": 10400, "currency": "KZT", "source": "SYNTHETIC" },
+    { "supplier_id": "SYN-SUP-002", "synthetic_product_id": "SYN-P001", "lead_time_days": 12, "minimum_order_quantity": 2, "pack_size": 1, "purchase_price": 10800, "currency": "KZT", "source": "SYNTHETIC" },
+    { "supplier_id": "SYN-SUP-001", "synthetic_product_id": "SYN-P002", "lead_time_days": 9, "minimum_order_quantity": 6, "pack_size": 3, "purchase_price": 1320, "currency": "KZT", "source": "SYNTHETIC" },
+    { "supplier_id": "SYN-SUP-003", "synthetic_product_id": "SYN-P002", "lead_time_days": 5, "minimum_order_quantity": 4, "pack_size": 2, "purchase_price": 1390, "currency": "KZT", "source": "SYNTHETIC" },
+    { "supplier_id": "SYN-SUP-002", "synthetic_product_id": "SYN-P003", "lead_time_days": 14, "minimum_order_quantity": 1, "pack_size": 1, "purchase_price": 184000, "currency": "KZT", "source": "SYNTHETIC" },
+    { "supplier_id": "SYN-SUP-004", "synthetic_product_id": "SYN-P003", "lead_time_days": 20, "minimum_order_quantity": 1, "pack_size": 1, "purchase_price": 179500, "currency": "KZT", "source": "SYNTHETIC" },
+    { "supplier_id": "SYN-SUP-001", "synthetic_product_id": "SYN-P004", "lead_time_days": 10, "minimum_order_quantity": 2, "pack_size": 1, "purchase_price": 67000, "currency": "KZT", "source": "SYNTHETIC" },
+    { "supplier_id": "SYN-SUP-004", "synthetic_product_id": "SYN-P004", "lead_time_days": 18, "minimum_order_quantity": 1, "pack_size": 1, "purchase_price": 69500, "currency": "KZT", "source": "SYNTHETIC" },
+    { "supplier_id": "SYN-SUP-002", "synthetic_product_id": "SYN-P005", "lead_time_days": 15, "minimum_order_quantity": 1, "pack_size": 1, "purchase_price": 108000, "currency": "KZT", "source": "SYNTHETIC" },
+    { "supplier_id": "SYN-SUP-003", "synthetic_product_id": "SYN-P005", "lead_time_days": 8, "minimum_order_quantity": 2, "pack_size": 1, "purchase_price": 112000, "currency": "KZT", "source": "SYNTHETIC" },
+    { "supplier_id": "SYN-SUP-001", "synthetic_product_id": "SYN-P006", "lead_time_days": 11, "minimum_order_quantity": 2, "pack_size": 1, "purchase_price": 36500, "currency": "KZT", "source": "SYNTHETIC" },
+    { "supplier_id": "SYN-SUP-003", "synthetic_product_id": "SYN-P006", "lead_time_days": 6, "minimum_order_quantity": 4, "pack_size": 2, "purchase_price": 37900, "currency": "KZT", "source": "SYNTHETIC" },
+    { "supplier_id": "SYN-SUP-002", "synthetic_product_id": "SYN-P007", "lead_time_days": 13, "minimum_order_quantity": 3, "pack_size": 1, "purchase_price": 6900, "currency": "KZT", "source": "SYNTHETIC" },
+    { "supplier_id": "SYN-SUP-004", "synthetic_product_id": "SYN-P007", "lead_time_days": 19, "minimum_order_quantity": 2, "pack_size": 1, "purchase_price": 7250, "currency": "KZT", "source": "SYNTHETIC" },
+    { "supplier_id": "SYN-SUP-001", "synthetic_product_id": "SYN-P008", "lead_time_days": 7, "minimum_order_quantity": 4, "pack_size": 2, "purchase_price": 25800, "currency": "KZT", "source": "SYNTHETIC" },
+    { "supplier_id": "SYN-SUP-003", "synthetic_product_id": "SYN-P008", "lead_time_days": 16, "minimum_order_quantity": 2, "pack_size": 1, "purchase_price": 26900, "currency": "KZT", "source": "SYNTHETIC" },
+    { "supplier_id": "SYN-SUP-002", "synthetic_product_id": "SYN-P009", "lead_time_days": 10, "minimum_order_quantity": 3, "pack_size": 1, "purchase_price": 13900, "currency": "KZT", "source": "SYNTHETIC" },
+    { "supplier_id": "SYN-SUP-004", "synthetic_product_id": "SYN-P009", "lead_time_days": 21, "minimum_order_quantity": 2, "pack_size": 1, "purchase_price": 14500, "currency": "KZT", "source": "SYNTHETIC" },
+    { "supplier_id": "SYN-SUP-001", "synthetic_product_id": "SYN-P010", "lead_time_days": 8, "minimum_order_quantity": 5, "pack_size": 5, "purchase_price": 5400, "currency": "KZT", "source": "SYNTHETIC" },
+    { "supplier_id": "SYN-SUP-003", "synthetic_product_id": "SYN-P010", "lead_time_days": 5, "minimum_order_quantity": 6, "pack_size": 2, "purchase_price": 5650, "currency": "KZT", "source": "SYNTHETIC" },
+    { "supplier_id": "SYN-SUP-002", "synthetic_product_id": "SYN-P011", "lead_time_days": 17, "minimum_order_quantity": 1, "pack_size": 1, "purchase_price": 44800, "currency": "KZT", "source": "SYNTHETIC" },
+    { "supplier_id": "SYN-SUP-004", "synthetic_product_id": "SYN-P011", "lead_time_days": 12, "minimum_order_quantity": 2, "pack_size": 1, "purchase_price": 46900, "currency": "KZT", "source": "SYNTHETIC" },
+    { "supplier_id": "SYN-SUP-001", "synthetic_product_id": "SYN-P012", "lead_time_days": 6, "minimum_order_quantity": 8, "pack_size": 4, "purchase_price": 3150, "currency": "KZT", "source": "SYNTHETIC" },
+    { "supplier_id": "SYN-SUP-003", "synthetic_product_id": "SYN-P012", "lead_time_days": 14, "minimum_order_quantity": 4, "pack_size": 2, "purchase_price": 3290, "currency": "KZT", "source": "SYNTHETIC" }
+  ],
+  "inbound_shipments": [
+    { "shipment_id": "SYN-SHIP-001", "synthetic_product_id": "SYN-P001", "supplier_id": "SYN-SUP-001", "quantity": 10, "expected_arrival_date": "2026-07-04", "status": "IN_TRANSIT", "source": "SYNTHETIC" },
+    { "shipment_id": "SYN-SHIP-002", "synthetic_product_id": "SYN-P003", "supplier_id": "SYN-SUP-004", "quantity": 3, "expected_arrival_date": "2026-07-10", "status": "CANCELLED", "source": "SYNTHETIC" },
+    { "shipment_id": "SYN-SHIP-003", "synthetic_product_id": "SYN-P003", "supplier_id": "SYN-SUP-002", "quantity": 1, "expected_arrival_date": "2026-07-30", "status": "IN_TRANSIT", "source": "SYNTHETIC" },
+    { "shipment_id": "SYN-SHIP-004", "synthetic_product_id": "SYN-P005", "supplier_id": "SYN-SUP-003", "quantity": 4, "expected_arrival_date": "2026-07-15", "status": "IN_TRANSIT", "source": "SYNTHETIC" },
+    { "shipment_id": "SYN-SHIP-005", "synthetic_product_id": "SYN-P006", "supplier_id": "SYN-SUP-003", "quantity": 12, "expected_arrival_date": "2026-07-20", "status": "CONFIRMED", "source": "SYNTHETIC" },
+    { "shipment_id": "SYN-SHIP-006", "synthetic_product_id": "SYN-P008", "supplier_id": "SYN-SUP-001", "quantity": 4, "expected_arrival_date": "2026-07-31", "status": "IN_TRANSIT", "source": "SYNTHETIC" },
+    { "shipment_id": "SYN-SHIP-007", "synthetic_product_id": "SYN-P009", "supplier_id": "SYN-SUP-002", "quantity": 6, "expected_arrival_date": "2026-06-29", "status": "IN_TRANSIT", "source": "SYNTHETIC" },
+    { "shipment_id": "SYN-SHIP-008", "synthetic_product_id": "SYN-P010", "supplier_id": "SYN-SUP-003", "quantity": 8, "expected_arrival_date": "2026-07-10", "status": "IN_TRANSIT", "source": "SYNTHETIC" },
+    { "shipment_id": "SYN-SHIP-009", "synthetic_product_id": "SYN-P012", "supplier_id": "SYN-SUP-001", "quantity": 20, "expected_arrival_date": "2026-07-22", "status": "RECEIVED", "source": "SYNTHETIC" }
+  ],
+  "demo_inventory": {
+    "as_of_date": "2026-06-30",
+    "source": "SYNTHETIC",
+    "items": [
+      { "synthetic_product_id": "SYN-P001", "current_stock": 12, "source": "SYNTHETIC" },
+      { "synthetic_product_id": "SYN-P002", "current_stock": 45, "source": "SYNTHETIC" },
+      { "synthetic_product_id": "SYN-P003", "current_stock": 2, "source": "SYNTHETIC" },
+      { "synthetic_product_id": "SYN-P004", "current_stock": 5, "source": "SYNTHETIC" },
+      { "synthetic_product_id": "SYN-P005", "current_stock": 3, "source": "SYNTHETIC" },
+      { "synthetic_product_id": "SYN-P006", "current_stock": 18, "source": "SYNTHETIC" },
+      { "synthetic_product_id": "SYN-P007", "current_stock": 24, "source": "SYNTHETIC" },
+      { "synthetic_product_id": "SYN-P008", "current_stock": 7, "source": "SYNTHETIC" },
+      { "synthetic_product_id": "SYN-P009", "current_stock": 19, "source": "SYNTHETIC" },
+      { "synthetic_product_id": "SYN-P010", "current_stock": 35, "source": "SYNTHETIC" },
+      { "synthetic_product_id": "SYN-P011", "current_stock": 6, "source": "SYNTHETIC" },
+      { "synthetic_product_id": "SYN-P012", "current_stock": 28, "source": "SYNTHETIC" }
+    ]
+  }
+}

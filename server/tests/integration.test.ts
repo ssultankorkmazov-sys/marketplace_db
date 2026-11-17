@@ -3,18 +3,16 @@ import request from 'supertest';
 import { Pool } from 'pg';
 import { createApp } from '../src/app.js';
 import { createPool } from '../src/db.js';
+import { validateTestDatabaseUrl } from '../src/testDatabaseConfig.js';
 
 const databaseUrl = process.env.TEST_DATABASE_URL;
-const integration = databaseUrl ? describe : describe.skip;
+const verifiedDatabase = databaseUrl === undefined ? null : validateTestDatabaseUrl(databaseUrl);
+const integration = verifiedDatabase ? describe : describe.skip;
 let pool: ReturnType<typeof createPool>;
 
 integration('PostgreSQL catalog integration (TEST_DATABASE_URL only)', () => {
   beforeAll(async () => {
-    const url = new URL(databaseUrl!);
-    if (!['localhost', '127.0.0.1', '::1'].includes(url.hostname)) throw new Error('TEST_DATABASE_URL must point to a local PostgreSQL server.');
-    const dbName = decodeURIComponent(url.pathname.slice(1));
-    if (!dbName.endsWith('_test')) throw new Error('TEST_DATABASE_URL must target a database whose name ends with _test.');
-    pool = createPool({ databaseUrl: databaseUrl! });
+    pool = createPool({ databaseUrl: verifiedDatabase!.connectionString });
     await pool.query('SELECT 1 FROM categories LIMIT 1');
   });
   afterAll(async () => { await pool?.end(); });
@@ -93,10 +91,7 @@ integration('PostgreSQL auth, orders, transactions and admin integration (TEST_D
   }
 
   beforeAll(async () => {
-    const url = new URL(databaseUrl!);
-    if (!['localhost', '127.0.0.1', '::1'].includes(url.hostname)) throw new Error('TEST_DATABASE_URL must point to a local PostgreSQL server.');
-    if (!decodeURIComponent(url.pathname.slice(1)).endsWith('_test')) throw new Error('TEST_DATABASE_URL must target a database whose name ends with _test.');
-    pool = createPool({ databaseUrl: databaseUrl! });
+    pool = createPool({ databaseUrl: verifiedDatabase!.connectionString });
     await pool.query('SELECT 1 FROM categories LIMIT 1');
     await pool.query('SELECT password_hash, role FROM users LIMIT 1');
     const products = await pool.query<{ product_id: number }>(

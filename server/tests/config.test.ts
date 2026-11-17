@@ -4,7 +4,7 @@ import { loadConfig } from '../src/config.js';
 describe('backend configuration', () => {
   it('loads PostgreSQL URL and defaults', () => {
     expect(loadConfig({ DATABASE_URL: 'postgres://local/db' })).toEqual({
-      databaseUrl: 'postgres://local/db', port: 3001, nodeEnv: 'development', jeffreysDetectorEnabled: false,
+      databaseUrl: 'postgres://local/db', port: 3001, nodeEnv: 'development', jeffreysDetectorEnabled: false, jeffreysShadowModeEnabled: false,
     });
   });
 
@@ -18,6 +18,14 @@ describe('backend configuration', () => {
     expect(loadConfig({ DATABASE_URL: 'postgres://local/db', JEFFREYS_DETECTOR_ENABLED: 'true' }).jeffreysDetectorEnabled).toBe(true);
     expect(loadConfig({ DATABASE_URL: 'postgres://local/db', JEFFREYS_DETECTOR_ENABLED: 'FALSE' }).jeffreysDetectorEnabled).toBe(false);
     expect(() => loadConfig({ DATABASE_URL: 'postgres://local/db', JEFFREYS_DETECTOR_ENABLED: 'yes' })).toThrow(/must be true or false/);
+  });
+
+  it('keeps Jeffreys Shadow Mode disabled by default and validates its explicit flag', () => {
+    expect(loadConfig({ DATABASE_URL: 'postgres://local/db' }).jeffreysShadowModeEnabled).toBe(false);
+    expect(loadConfig({ DATABASE_URL: 'postgres://local/db', JEFFREYS_SHADOW_MODE_ENABLED: 'true' }).jeffreysShadowModeEnabled).toBe(true);
+    expect(loadConfig({ DATABASE_URL: 'postgres://local/db', JEFFREYS_SHADOW_MODE_ENABLED: 'FALSE' }).jeffreysShadowModeEnabled).toBe(false);
+    expect(() => loadConfig({ DATABASE_URL: 'postgres://local/db', JEFFREYS_SHADOW_MODE_ENABLED: 'enabled' }))
+      .toThrow(/JEFFREYS_SHADOW_MODE_ENABLED must be true or false/);
   });
 
   it.each([

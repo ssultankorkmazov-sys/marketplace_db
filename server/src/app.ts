@@ -1,11 +1,15 @@
 import express, { type ErrorRequestHandler } from 'express';
 import type { Pool, PoolClient } from 'pg';
+import { readFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+import { basename, dirname, join } from 'node:path';
 import { createHash, randomBytes, scrypt as scryptCallback, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
 import { checkDatabase, checkDatabaseReadiness } from './db.js';
 import { insertAuditLog, publishAuditLog, type AuditEventInput, type AuditPublisher } from './audit.js';
 import { ANOMALY_TYPES, type AnomalyIncident, type IncidentStatus, type IncidentSeverity } from './anomalies.js';
 import { createStatisticalAnomalySnapshot } from './jeffreysContract.js';
+import { isSyntheticReplenishmentReport } from './replenishmentDemo.js';
 
 const scrypt = promisify(scryptCallback);
 export const SESSION_COOKIE_NAME = 'marketkz_session';
@@ -87,7 +91,12 @@ function sendDatabaseError(error: unknown, next: (error?: unknown) => void) {
   next(error);
 }
 
-export function createApp(pool: Pool, options: { secureCookies?: boolean; allowLocalOrigins?: boolean; auditPublisher?: AuditPublisher; jeffreysDetectorEnabled?: boolean } = {}) {
+const appModuleDirectory = dirname(fileURLToPath(import.meta.url));
+const SYNTHETIC_REPLENISHMENT_REPORT_PATH = basename(appModuleDirectory) === 'src'
+  ? fileURLToPath(new URL('../../ml/sales_prediction/reports/phase3ab-synthetic-replenishment.json', import.meta.url))
+  : join(appModuleDirectory, 'demo', 'phase3ab-synthetic-replenishment.json');
+
+export function createApp(pool: Pool, options: { secureCookies?: boolean; allowLocalOrigins?: boolean; auditPublisher?: AuditPublisher; jeffreysDetectorEnabled?: boolean; jeffreysShadowModeEnabled?: boolean; replenishmentDemoReportPath?: string } = {}) {
   const app = express();
   app.disable('x-powered-by');
   app.use((request, response, next) => {
@@ -554,6 +563,143 @@ export function createApp(pool: Pool, options: { secureCookies?: boolean; allowL
     } catch (error) { return next(error); }
   });
 
+  app.get('/api/v1/admin/anomalies/shadow/status', async (request, response, next) => {
+    try {
+      if (!await requireAdmin(request, response)) return;
+      const storage = await pool.query<{ checkpoint: string | null; evaluations: string | null; incidents: string | null }>(
+        `SELECT to_regclass('public.jeffreys_shadow_checkpoint')::text AS checkpoint,
+                to_regclass('public.jeffreys_shadow_evaluations')::text AS evaluations,
+                to_regclass('public.anomaly_incidents')::text AS incidents`,
+      );
+      if (!storage.rows[0]?.checkpoint || !storage.rows[0]?.evaluations || !storage.rows[0]?.incidents) {
+        return response.status(503).json({ error: 'Shadow Mode storage is unavailable.' });
+      }
+      const { rows } = await pool.query<{
+        profile_version: string | null; latest_evaluation_at: string | null;
+        sufficient_data: number; insufficient_data: number; work_limit_exceeded: number; evaluation_error: number;
+      }>(
+        `SELECT
+           (SELECT profile_version FROM public.jeffreys_shadow_evaluations
+            ORDER BY evaluated_at DESC, evaluation_id DESC LIMIT 1) AS profile_version,
+           (SELECT evaluated_at::text FROM public.jeffreys_shadow_evaluations
+            ORDER BY evaluated_at DESC, evaluation_id DESC LIMIT 1) AS latest_evaluation_at,
+           COUNT(*) FILTER (WHERE evaluation_status='SUFFICIENT_DATA')::int AS sufficient_data,
+           COUNT(*) FILTER (WHERE evaluation_status='INSUFFICIENT_DATA')::int AS insufficient_data,
+           COUNT(*) FILTER (WHERE evaluation_status='WORK_LIMIT_EXCEEDED')::int AS work_limit_exceeded,
+           COUNT(*) FILTER (WHERE evaluation_status='EVALUATION_ERROR')::int AS evaluation_error
+         FROM public.jeffreys_shadow_evaluations`,
+      );
+      const status = rows[0];
+      return response.json({
+        experimental: true,
+        operational: false,
+        enabled: options.jeffreysShadowModeEnabled ?? false,
+        storage_available: true,
+        profile_version: status?.profile_version ?? null,
+        latest_evaluation_at: status?.latest_evaluation_at ?? null,
+        evaluation_counts: {
+          SUFFICIENT_DATA: status?.sufficient_data ?? 0,
+          INSUFFICIENT_DATA: status?.insufficient_data ?? 0,
+          WORK_LIMIT_EXCEEDED: status?.work_limit_exceeded ?? 0,
+          EVALUATION_ERROR: status?.evaluation_error ?? 0,
+        },
+      });
+    } catch (error) {
+      if ((error as { code?: string })?.code === '42P01') return response.status(503).json({ error: 'Shadow Mode storage is unavailable.' });
+      return next(error);
+    }
+  });
+
+  app.get('/api/v1/admin/anomalies/shadow/evaluations', async (request, response, next) => {
+    try {
+      if (!await requireAdmin(request, response)) return;
+      const query = request.query as Record<string, unknown>;
+      const allowed = new Set(['page', 'pageSize', 'profile', 'userId', 'status', 'from', 'to']);
+      if (Object.keys(query).some((key) => !allowed.has(key)) ||
+          Object.keys(query).some((key) => query[key] !== undefined && typeof query[key] !== 'string')) {
+        return response.status(400).json({ error: 'Некорректные параметры фильтра или пагинации.' });
+      }
+      const page = positiveInt(query.page, 1, 1_000_000);
+      const pageSize = positiveInt(query.pageSize, 20, 100);
+      const profile = query.profile as string | undefined;
+      const userId = positiveInt(query.userId, 1, MAX_DATABASE_ID);
+      const status = query.status as string | undefined;
+      const from = query.from as string | undefined;
+      const to = query.to as string | undefined;
+      const validDate = (value: string | undefined) => {
+        if (value === undefined) return true;
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+        const date = new Date(`${value}T00:00:00Z`);
+        return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
+      };
+      const statuses = ['SUFFICIENT_DATA', 'INSUFFICIENT_DATA', 'WORK_LIMIT_EXCEEDED', 'EVALUATION_ERROR'];
+      if (page === null || pageSize === null || userId === null ||
+          (profile !== undefined && !/^[A-Za-z0-9._-]{1,64}$/.test(profile)) ||
+          (status !== undefined && !statuses.includes(status)) ||
+          !validDate(from) || !validDate(to) || (from && to && from > to)) {
+        return response.status(400).json({ error: 'Некорректные параметры фильтра или пагинации.' });
+      }
+
+      const storage = await pool.query<{ evaluations: string | null; incidents: string | null }>(
+        `SELECT to_regclass('public.jeffreys_shadow_evaluations')::text AS evaluations,
+                to_regclass('public.anomaly_incidents')::text AS incidents`,
+      );
+      if (!storage.rows[0]?.evaluations || !storage.rows[0]?.incidents) {
+        return response.status(503).json({ error: 'Shadow Mode storage is unavailable.' });
+      }
+
+      const values: unknown[] = [];
+      const filters: string[] = [];
+      const add = (value: unknown, expression: (placeholder: string) => string) => {
+        values.push(value);
+        filters.push(expression(`$${values.length}`));
+      };
+      if (profile) add(profile, (p) => `evaluation.profile_version=${p}`);
+      if (query.userId !== undefined) add(userId, (p) => `evaluation.subject_user_id=${p}`);
+      if (status) add(status, (p) => `evaluation.evaluation_status=${p}`);
+      if (from) add(from, (p) => `evaluation.evaluated_at >= ${p}::date`);
+      if (to) add(to, (p) => `evaluation.evaluated_at < (${p}::date + INTERVAL '1 day')`);
+      const where = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
+      const [count, pageRows] = await Promise.all([
+        pool.query<{ total: number }>(`SELECT COUNT(*)::int AS total FROM public.jeffreys_shadow_evaluations evaluation ${where}`, values),
+        pool.query(
+          `SELECT evaluation.evaluation_id::text AS evaluation_id, evaluation.profile_version,
+             evaluation.subject_user_id, evaluation.evaluated_at, evaluation.baseline_start_at,
+             evaluation.baseline_end_at, evaluation.current_start_at, evaluation.current_end_at,
+             evaluation.baseline_observations, evaluation.current_observations,
+             evaluation.baseline_distribution, evaluation.current_distribution, evaluation.divergence,
+             evaluation.category_contributions, evaluation.evaluation_status, evaluation.sample_counts_capped,
+             evaluation.recorded_at,
+             COALESCE(correlations.incidents, '[]'::jsonb) AS matching_incidents
+           FROM public.jeffreys_shadow_evaluations evaluation
+           LEFT JOIN LATERAL (
+             SELECT jsonb_agg(jsonb_build_object(
+               'incident_id', incident.incident_id::text,
+               'anomaly_type', incident.anomaly_type,
+               'status', incident.status,
+               'severity', incident.severity,
+               'detected_at', incident.detected_at,
+               'correlation_basis', 'SAME_USER_AND_OVERLAPPING_EVENT_TIME'
+             ) ORDER BY incident.detected_at DESC, incident.incident_id DESC) AS incidents
+             FROM public.anomaly_incidents incident
+             WHERE incident.subject_user_id=evaluation.subject_user_id
+               AND incident.first_event_at < evaluation.current_end_at
+               AND incident.last_event_at >= evaluation.current_start_at
+           ) correlations ON TRUE
+           ${where}
+           ORDER BY evaluation.evaluated_at DESC, evaluation.evaluation_id DESC
+           LIMIT $${values.length + 1} OFFSET $${values.length + 2}`,
+          [...values, pageSize, (page - 1) * pageSize],
+        ),
+      ]);
+      const total = count.rows[0]?.total ?? 0;
+      return response.json({ evaluations: pageRows.rows, page, pageSize, total, totalPages: Math.ceil(total / pageSize) });
+    } catch (error) {
+      if ((error as { code?: string })?.code === '42P01') return response.status(503).json({ error: 'Shadow Mode storage is unavailable.' });
+      return next(error);
+    }
+  });
+
   app.get('/api/v1/admin/anomalies/:incidentId', async (request, response, next) => {
     const incidentId = positiveBigIntId(request.params.incidentId);
     if (incidentId === null) return response.status(400).json({ error: 'Некорректный ID инцидента.' });
@@ -642,6 +788,188 @@ export function createApp(pool: Pool, options: { secureCookies?: boolean; allowL
       if ('conflict' in changed) return response.status(409).json({ error: 'Завершённый инцидент нельзя изменить.' });
       if (changed.audit) publishAuditLog(options.auditPublisher, changed.audit);
       return response.json({ incident: changed.incident ?? { incident_id: incidentId, status: changed.status } });
+    } catch (error) { return next(error); }
+  });
+
+  app.get('/api/v1/admin/replenishment/demo', async (request, response, next) => {
+    let admin: UserRow | null;
+    try {
+      admin = await requireAdmin(request, response);
+    } catch (error) {
+      return next(error);
+    }
+    if (!admin) return;
+    try {
+      const reportText = await readFile(options.replenishmentDemoReportPath ?? SYNTHETIC_REPLENISHMENT_REPORT_PATH, 'utf8');
+      let report: unknown;
+      try { report = JSON.parse(reportText); } catch { return response.status(503).json({ error: 'Демонстрационный отчёт временно недоступен.' }); }
+      if (!isSyntheticReplenishmentReport(report)) return response.status(503).json({ error: 'Демонстрационный отчёт временно недоступен.' });
+      return response.json(report);
+    } catch {
+      return response.status(503).json({ error: 'Демонстрационный отчёт временно недоступен.' });
+    }
+  });
+
+  app.post('/api/v1/admin/replenishment/runs', async (request, response, next) => {
+    let admin: UserRow | null;
+    try { admin = await requireAdmin(request, response); }
+    catch (error) { return next(error); }
+    if (!admin) return;
+    if (request.body && (typeof request.body !== 'object' || Array.isArray(request.body) || Object.keys(request.body).length > 0)) {
+      return response.status(400).json({ error: 'Создание запуска не принимает данные отчёта от клиента.' });
+    }
+
+    let report: unknown;
+    try {
+      const contents = await readFile(options.replenishmentDemoReportPath ?? SYNTHETIC_REPLENISHMENT_REPORT_PATH, 'utf8');
+      report = JSON.parse(contents);
+      if (!isSyntheticReplenishmentReport(report)) return response.status(503).json({ error: 'Демонстрационный отчёт временно недоступен.' });
+    } catch {
+      return response.status(503).json({ error: 'Демонстрационный отчёт временно недоступен.' });
+    }
+
+    try {
+      const saved = await inTransaction(pool, async (client) => {
+        const { metadata, recommendations } = report as { metadata: Record<string, unknown>; recommendations: Record<string, unknown>[] };
+        const forecast = metadata.forecast_period as { start: string; end: string };
+        const policy = metadata.safety_stock_policy as { safety_days: number };
+        const insertedRun = await client.query<{ run_id: string; created_at: string }>(
+          `INSERT INTO public.replenishment_runs
+             (source, model_name, model_version, forecast_start, forecast_end, review_period_days, metadata_snapshot, created_by_user_id)
+           VALUES ('SYNTHETIC', $1, NULL, $2::date, $3::date, $4, $5::jsonb, $6)
+           RETURNING run_id::text AS run_id, created_at`,
+          [metadata.model, forecast.start, forecast.end, metadata.review_period_days, JSON.stringify(metadata), admin!.user_id],
+        );
+        if (!insertedRun.rows[0]) throw new Error('Replenishment run insert returned no row.');
+        const runId = insertedRun.rows[0].run_id;
+        for (const [recommendationIndex, recommendation] of recommendations.entries()) {
+          await client.query(
+            `INSERT INTO public.replenishment_recommendations
+               (run_id, recommendation_index, synthetic_product_id, synthetic_supplier_id, supplier_name, recommendation_snapshot)
+             VALUES ($1, $2, $3, $4, $5, $6::jsonb)`,
+            [runId, recommendationIndex, recommendation.synthetic_product_id, recommendation.supplier_id,
+              recommendation.supplier_name, JSON.stringify(recommendation)],
+          );
+        }
+        const log = await insertAuditLog(client, {
+          userId: admin!.user_id, action: 'REPLENISHMENT_RUN_CREATED', entityType: 'replenishment_run',
+          entityId: Number(runId) <= MAX_DATABASE_ID ? Number(runId) : null, status: 'SUCCESS',
+          details: { run_id: runId, source: 'SYNTHETIC', recommendation_count: recommendations.length }, ipAddress: request.ip,
+        });
+        return { runId, createdAt: insertedRun.rows[0].created_at, count: recommendations.length, model: metadata.model,
+          forecastStart: forecast.start, forecastEnd: forecast.end, safetyDays: policy.safety_days, log };
+      });
+      publishAuditLog(options.auditPublisher, saved.log);
+      return response.status(201).json({ run: {
+        run_id: saved.runId, source: 'SYNTHETIC', model_name: saved.model, forecast_start: saved.forecastStart,
+        forecast_end: saved.forecastEnd, created_at: saved.createdAt, recommendation_count: saved.count,
+        accepted_count: 0, rejected_count: 0, pending_count: saved.count,
+      } });
+    } catch (error) { return next(error); }
+  });
+
+  app.get('/api/v1/admin/replenishment/runs', async (request, response, next) => {
+    try {
+      if (!await requireAdmin(request, response)) return;
+      const page = positiveInt(request.query.page, 1, 1_000_000);
+      const pageSize = positiveInt(request.query.pageSize, 10, 100);
+      if (page === null || pageSize === null) return response.status(400).json({ error: 'Некорректные параметры пагинации.' });
+      const offset = (page - 1) * pageSize;
+      if (!Number.isSafeInteger(offset)) return response.status(400).json({ error: 'Некорректные параметры пагинации.' });
+      const totalResult = await pool.query<{ total: number }>('SELECT COUNT(*)::int AS total FROM public.replenishment_runs');
+      const { rows } = await pool.query(
+        `SELECT r.run_id::text AS run_id, r.source, r.model_name, r.model_version,
+           r.forecast_start, r.forecast_end, r.review_period_days, r.created_at,
+           r.created_by_user_id, creator.name AS created_by_name,
+           (SELECT COUNT(*)::int FROM public.replenishment_recommendations rec WHERE rec.run_id=r.run_id) AS recommendation_count,
+           (SELECT COUNT(*)::int FROM public.replenishment_decisions d JOIN public.replenishment_recommendations rec ON rec.recommendation_id=d.recommendation_id WHERE rec.run_id=r.run_id AND d.decision='ACCEPTED') AS accepted_count,
+           (SELECT COUNT(*)::int FROM public.replenishment_decisions d JOIN public.replenishment_recommendations rec ON rec.recommendation_id=d.recommendation_id WHERE rec.run_id=r.run_id AND d.decision='REJECTED') AS rejected_count,
+           ((SELECT COUNT(*)::int FROM public.replenishment_recommendations rec WHERE rec.run_id=r.run_id) -
+            (SELECT COUNT(*)::int FROM public.replenishment_decisions d JOIN public.replenishment_recommendations rec ON rec.recommendation_id=d.recommendation_id WHERE rec.run_id=r.run_id)) AS pending_count
+         FROM public.replenishment_runs r
+         LEFT JOIN public.users creator ON creator.user_id=r.created_by_user_id
+         ORDER BY r.created_at DESC, r.run_id DESC LIMIT $1 OFFSET $2`, [pageSize, offset],
+      );
+      const total = Number(totalResult.rows[0]?.total ?? 0);
+      return response.json({ runs: rows, page, pageSize, total, totalPages: Math.ceil(total / pageSize) });
+    } catch (error) { return next(error); }
+  });
+
+  app.get('/api/v1/admin/replenishment/runs/:runId/recommendations', async (request, response, next) => {
+    try {
+      if (!await requireAdmin(request, response)) return;
+      const runId = positiveBigIntId(request.params.runId);
+      const page = positiveInt(request.query.page, 1, 1_000_000);
+      const pageSize = positiveInt(request.query.pageSize, 20, 100);
+      if (runId === null || page === null || pageSize === null) return response.status(400).json({ error: 'Некорректный ID запуска или параметры пагинации.' });
+      const offset = (page - 1) * pageSize;
+      if (!Number.isSafeInteger(offset)) return response.status(400).json({ error: 'Некорректные параметры пагинации.' });
+      const exists = await pool.query('SELECT run_id FROM public.replenishment_runs WHERE run_id=$1', [runId]);
+      if (!exists.rows[0]) return response.status(404).json({ error: 'Запуск не найден.' });
+      const totalResult = await pool.query<{ total: number }>(
+        'SELECT COUNT(*)::int AS total FROM public.replenishment_recommendations WHERE run_id=$1', [runId],
+      );
+      const { rows } = await pool.query(
+        `SELECT rec.recommendation_id::text AS recommendation_id, rec.recommendation_index,
+           rec.recommendation_snapshot, COALESCE(d.decision, 'PENDING') AS decision_status,
+           d.decided_at, d.decided_by_user_id, decision_admin.name AS decided_by_name
+         FROM public.replenishment_recommendations rec
+         LEFT JOIN public.replenishment_decisions d ON d.recommendation_id=rec.recommendation_id
+         LEFT JOIN public.users decision_admin ON decision_admin.user_id=d.decided_by_user_id
+         WHERE rec.run_id=$1 ORDER BY rec.recommendation_index LIMIT $2 OFFSET $3`, [runId, pageSize, offset],
+      );
+      const total = Number(totalResult.rows[0]?.total ?? 0);
+      const recommendations = rows.map((row) => ({ ...row.recommendation_snapshot, recommendation_id: row.recommendation_id,
+        recommendation_index: row.recommendation_index, decision_status: row.decision_status, decided_at: row.decided_at,
+        decided_by_user_id: row.decided_by_user_id, decided_by_name: row.decided_by_name }));
+      return response.json({ run_id: runId, recommendations, page, pageSize, total, totalPages: Math.ceil(total / pageSize) });
+    } catch (error) { return next(error); }
+  });
+
+  app.patch('/api/v1/admin/replenishment/recommendations/:recommendationId/decision', async (request, response, next) => {
+    try {
+      const admin = await requireAdmin(request, response);
+      if (!admin) return;
+      const recommendationId = positiveBigIntId(request.params.recommendationId);
+      const body = request.body;
+      if (recommendationId === null || !body || typeof body !== 'object' || Array.isArray(body) ||
+          Object.keys(body).length !== 1 || !['ACCEPTED', 'REJECTED'].includes(body.decision)) {
+        return response.status(400).json({ error: 'Укажите корректное решение ACCEPTED или REJECTED.' });
+      }
+      const requestedDecision = body.decision as 'ACCEPTED' | 'REJECTED';
+      const outcome = await inTransaction(pool, async (client) => {
+        const recommendationResult = await client.query<{ recommendation_snapshot: Record<string, unknown>; run_id: string }>(
+          `SELECT recommendation_snapshot, run_id::text AS run_id
+           FROM public.replenishment_recommendations WHERE recommendation_id=$1 FOR UPDATE`, [recommendationId],
+        );
+        const recommendation = recommendationResult.rows[0];
+        if (!recommendation) return { kind: 'missing' as const };
+        if (recommendation.recommendation_snapshot.recommendation_status !== 'PURCHASE_RECOMMENDED') return { kind: 'ineligible' as const };
+        const currentResult = await client.query<{ decision: 'ACCEPTED' | 'REJECTED'; decided_at: string; decided_by_user_id: number | null }>(
+          `SELECT decision, decided_at, decided_by_user_id FROM public.replenishment_decisions WHERE recommendation_id=$1`, [recommendationId],
+        );
+        const current = currentResult.rows[0];
+        if (current) return current.decision === requestedDecision
+          ? { kind: 'existing' as const, decision: current }
+          : { kind: 'conflict' as const };
+        const inserted = await client.query<{ decision_id: string; decision: 'ACCEPTED' | 'REJECTED'; decided_at: string; decided_by_user_id: number }>(
+          `INSERT INTO public.replenishment_decisions (recommendation_id, decision, decided_by_user_id)
+           VALUES ($1, $2, $3) RETURNING decision_id::text AS decision_id, decision, decided_at, decided_by_user_id`,
+          [recommendationId, requestedDecision, admin.user_id],
+        );
+        if (!inserted.rows[0]) throw new Error('Replenishment decision insert returned no row.');
+        const audit = await insertAuditLog(client, {
+          userId: admin.user_id, action: 'REPLENISHMENT_DECISION_RECORDED', entityType: 'replenishment_recommendation',
+          entityId: Number(recommendationId) <= MAX_DATABASE_ID ? Number(recommendationId) : null, status: 'SUCCESS',
+          details: { recommendation_id: recommendationId, run_id: recommendation.run_id, decision: requestedDecision }, ipAddress: request.ip,
+        });
+        return { kind: 'created' as const, decision: inserted.rows[0], audit };
+      });
+      if (outcome.kind === 'missing') return response.status(404).json({ error: 'Рекомендация не найдена.' });
+      if (outcome.kind === 'ineligible') return response.status(400).json({ error: 'Решение доступно только для рекомендаций с закупкой.' });
+      if (outcome.kind === 'conflict') return response.status(409).json({ error: 'Для этой рекомендации уже записано противоположное решение.' });
+      if (outcome.kind === 'created') publishAuditLog(options.auditPublisher, outcome.audit);
+      return response.json({ decision: outcome.decision, already_recorded: outcome.kind === 'existing' });
     } catch (error) { return next(error); }
   });
 

@@ -93,6 +93,42 @@ export interface AdminReview {
   review_id: number; user_id: number; product_id: number; rating: number; comment: string | null; review_date: string;
   user: { user_id: number; name: string }; product: { product_id: number; name: string }
 }
+export type ReplenishmentRecommendationStatus = 'PURCHASE_RECOMMENDED' | 'NO_PURCHASE_NEEDED' | 'INSUFFICIENT_FORECAST'
+export interface ReplenishmentDemoRecommendation {
+  synthetic_product_id: string; product_name: string; supplier_id: string; supplier_name: string; current_stock: number; forecast_demand: number | null
+  safety_stock: number; inbound_quantity: number; lead_time_days: number; minimum_order_quantity: number; pack_size: number
+  purchase_price: number; currency: string; recommended_quantity: number | null; estimated_cost: number | null
+  recommendation_status: ReplenishmentRecommendationStatus; source: 'SYNTHETIC'; coverage_start_date: string
+  coverage_end_date: string; explanation: string; category_id: number
+}
+export interface ReplenishmentDemoReport {
+  metadata: {
+    source: 'SYNTHETIC'; experiment: string; as_of_date: string; model: string; model_config: Record<string, number>
+    training_period: { start: string; end: string }; forecast_period: { start: string; end: string }; review_period_days: number
+    safety_stock_policy: { name: string; safety_days: number; note: string }; supplier_count: number; synthetic_product_count: number
+    supplier_offer_count: number; recommendation_count: number; limitations: string[]
+  }
+  recommendations: ReplenishmentDemoRecommendation[]
+}
+export interface ReplenishmentRun {
+  run_id: string; source: 'SYNTHETIC'; model_name: string; model_version: string | null
+  forecast_start: string; forecast_end: string; review_period_days: number; created_at: string
+  created_by_user_id: number | null; created_by_name?: string | null
+  recommendation_count: number; accepted_count: number; rejected_count: number; pending_count: number
+}
+export interface ReplenishmentRunPage { runs: ReplenishmentRun[]; page: number; pageSize: number; total: number; totalPages: number }
+export interface SavedReplenishmentRecommendation extends Omit<ReplenishmentDemoRecommendation, 'product_name'> {
+  product_name?: string
+  recommendation_id: string; recommendation_index: number; decision_status: 'PENDING' | 'ACCEPTED' | 'REJECTED'
+  decided_at: string | null; decided_by_user_id: number | null; decided_by_name: string | null
+}
+export interface SavedReplenishmentRecommendationPage {
+  run_id: string; recommendations: SavedReplenishmentRecommendation[]; page: number; pageSize: number; total: number; totalPages: number
+}
+export interface ReplenishmentDecisionResponse {
+  decision: { decision_id?: string; decision: 'ACCEPTED' | 'REJECTED'; decided_at: string; decided_by_user_id: number | null }
+  already_recorded: boolean
+}
 export interface AuditLog {
   log_id: string;
   user_id: number | null;
@@ -150,6 +186,32 @@ export interface StatisticalAnomalySnapshot {
   category_contributions: Record<StatisticalActionCategory, number> | null
   evaluated_at: string | null
 }
+export type ShadowEvaluationStatus = 'SUFFICIENT_DATA' | 'INSUFFICIENT_DATA' | 'WORK_LIMIT_EXCEEDED' | 'EVALUATION_ERROR'
+export interface JeffreysShadowStatus {
+  experimental: true; operational: false; enabled: boolean; storage_available: true
+  profile_version: string | null; latest_evaluation_at: string | null
+  evaluation_counts: Record<ShadowEvaluationStatus, number>
+}
+export interface JeffreysShadowIncidentCorrelation {
+  incident_id: string; anomaly_type: AnomalyType; status: AnomalyStatus; severity: AnomalySeverity
+  detected_at: string; correlation_basis: 'SAME_USER_AND_OVERLAPPING_EVENT_TIME'
+}
+export interface JeffreysShadowEvaluation {
+  evaluation_id: string; profile_version: string; subject_user_id: number; evaluated_at: string
+  baseline_start_at: string; baseline_end_at: string; current_start_at: string; current_end_at: string
+  baseline_observations: number | null; current_observations: number | null
+  baseline_distribution: Record<StatisticalActionCategory, number> | null
+  current_distribution: Record<StatisticalActionCategory, number> | null
+  divergence: number | null; category_contributions: Record<StatisticalActionCategory, number> | null
+  evaluation_status: ShadowEvaluationStatus; sample_counts_capped: boolean; recorded_at: string
+  matching_incidents: JeffreysShadowIncidentCorrelation[]
+}
+export interface JeffreysShadowEvaluationFilters {
+  page?: number; pageSize?: number; profile?: string; userId?: number; status?: ShadowEvaluationStatus; from?: string; to?: string
+}
+export interface JeffreysShadowEvaluationPage {
+  evaluations: JeffreysShadowEvaluation[]; page: number; pageSize: number; total: number; totalPages: number
+}
 export function auditWebSocketUrl(): string {
   const url = new URL(`${API_ROOT}/admin/logs/stream`, window.location.href);
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -157,6 +219,21 @@ export function auditWebSocketUrl(): string {
 }
 
 export const adminApi = {
+  async replenishmentDemo() { return request<ReplenishmentDemoReport>('/admin/replenishment/demo') },
+  async createReplenishmentRun() { return request<{ run: ReplenishmentRun }>('/admin/replenishment/runs', { method: 'POST' }) },
+  async replenishmentRuns(page = 1, pageSize = 10) {
+    const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) })
+    return request<ReplenishmentRunPage>(`/admin/replenishment/runs?${params}`)
+  },
+  async replenishmentRunRecommendations(runId: string, page = 1, pageSize = 20) {
+    const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) })
+    return request<SavedReplenishmentRecommendationPage>(`/admin/replenishment/runs/${encodeURIComponent(runId)}/recommendations?${params}`)
+  },
+  async decideReplenishmentRecommendation(recommendationId: string, decision: 'ACCEPTED' | 'REJECTED') {
+    return request<ReplenishmentDecisionResponse>(`/admin/replenishment/recommendations/${encodeURIComponent(recommendationId)}/decision`, {
+      method: 'PATCH', body: JSON.stringify({ decision }),
+    })
+  },
   async categories() { return (await request<{ categories: AdminCategory[] }>('/admin/categories')).categories },
   async createCategory(name: string) { return (await request<{ category: AdminCategory }>('/admin/categories', { method: 'POST', body: JSON.stringify({ name }) })).category },
   async updateCategory(id: number, name: string) { return (await request<{ category: AdminCategory }>(`/admin/categories/${id}`, { method: 'PATCH', body: JSON.stringify({ name }) })).category },
@@ -197,6 +274,16 @@ export const adminApi = {
   },
   async anomalyQueueStats() { return request<AnomalyQueueStats>('/admin/anomalies/queue-stats') },
   async statisticalAnomalyStatus() { return request<StatisticalAnomalySnapshot>('/admin/anomalies/statistical-status') },
+  async jeffreysShadowStatus() { return request<JeffreysShadowStatus>('/admin/anomalies/shadow/status') },
+  async jeffreysShadowEvaluations(filters: JeffreysShadowEvaluationFilters = {}) {
+    const params = new URLSearchParams()
+    for (const key of ['page', 'pageSize', 'profile', 'userId', 'status', 'from', 'to'] as const) {
+      const value = filters[key]
+      if (value !== undefined && value !== '') params.set(key, String(value))
+    }
+    const query = params.toString()
+    return request<JeffreysShadowEvaluationPage>(`/admin/anomalies/shadow/evaluations${query ? `?${query}` : ''}`)
+  },
   async anomaly(id: string) { return (await request<{ incident: AnomalyIncident }>(`/admin/anomalies/${encodeURIComponent(id)}`)).incident },
   async updateAnomalyStatus(id: string, status: Exclude<AnomalyStatus, 'NEW'>) {
     return (await request<{ incident: Partial<AnomalyIncident> & Pick<AnomalyIncident, 'incident_id' | 'status'> }>(`/admin/anomalies/${encodeURIComponent(id)}/status`, { method: 'PATCH', body: JSON.stringify({ status }) })).incident

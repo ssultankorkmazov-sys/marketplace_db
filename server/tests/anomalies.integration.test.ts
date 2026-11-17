@@ -3,9 +3,11 @@ import request from 'supertest';
 import { Pool } from 'pg';
 import { createApp } from '../src/app.js';
 import { DEFAULT_ANOMALY_CONFIG, processPendingAnomalyEvents } from '../src/anomalies.js';
+import { validateTestDatabaseUrl } from '../src/testDatabaseConfig.js';
 
 const testDatabaseUrl = process.env.TEST_DATABASE_URL;
-const integration = testDatabaseUrl ? describe : describe.skip;
+const verifiedTestDatabase = testDatabaseUrl === undefined ? null : validateTestDatabaseUrl(testDatabaseUrl);
+const integration = verifiedTestDatabase ? describe : describe.skip;
 let pool: Pool;
 let account: ReturnType<typeof request.agent> | undefined;
 let userId: number | undefined;
@@ -13,10 +15,7 @@ let exactAdminDeniedUserId: number | undefined;
 
 integration('anomaly PostgreSQL integration (TEST_DATABASE_URL only)', () => {
   beforeAll(async () => {
-    const url = new URL(testDatabaseUrl!);
-    if (!['localhost', '127.0.0.1', '::1'].includes(url.hostname)) throw new Error('TEST_DATABASE_URL must point to local PostgreSQL.');
-    if (decodeURIComponent(url.pathname.slice(1)) !== 'market_db_test') throw new Error('TEST_DATABASE_URL must target market_db_test.');
-    pool = new Pool({ connectionString: testDatabaseUrl });
+    pool = new Pool({ connectionString: verifiedTestDatabase!.connectionString });
     const context = await pool.query<{ database_name: string }>('SELECT current_database() AS database_name');
     if (context.rows[0]?.database_name !== 'market_db_test') throw new Error('Refusing anomaly integration writes outside market_db_test.');
     const schema = await pool.query<{ incidents: string | null; queue: string | null }>(
