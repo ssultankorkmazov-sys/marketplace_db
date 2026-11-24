@@ -436,3 +436,284 @@ INSERT INTO reviews
 (48, 48, 5, 'Good protein powder.', '2026-09-20 12:00:00'),
 (49, 49, 4, 'Useful car accessory.', '2026-09-20 14:30:00'),
 (50, 50, 5, 'Gamepad works perfectly.', '2026-09-20 18:00:00');
+
+
+-- =====================================================
+-- MARKETKZ: ADDITIONAL TABLES AND PROCUREMENT FORECASTING
+-- NEON CHANGES: NOVEMBER 23-24, 2026
+-- =====================================================
+
+BEGIN;
+
+-- 1. SHOPPING CART
+CREATE TABLE IF NOT EXISTS public.cart_items (
+    cart_item_id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL
+        REFERENCES public.users(user_id) ON DELETE CASCADE,
+    product_id INTEGER NOT NULL
+        REFERENCES public.products(product_id) ON DELETE CASCADE,
+    quantity INTEGER NOT NULL DEFAULT 1
+        CHECK (quantity BETWEEN 1 AND 99),
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    UNIQUE (user_id, product_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_cart_items_user_id
+ON public.cart_items(user_id);
+
+
+-- 2. FAVORITES
+CREATE TABLE IF NOT EXISTS public.favorites (
+    favorite_id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL
+        REFERENCES public.users(user_id) ON DELETE CASCADE,
+    product_id INTEGER NOT NULL
+        REFERENCES public.products(product_id) ON DELETE CASCADE,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    UNIQUE (user_id, product_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_favorites_user_id
+ON public.favorites(user_id);
+
+
+-- 3. PRODUCT VIEWS
+CREATE TABLE IF NOT EXISTS public.product_views (
+    view_id BIGSERIAL PRIMARY KEY,
+    user_id INT REFERENCES public.users(user_id) ON DELETE CASCADE,
+    product_id INT NOT NULL
+        REFERENCES public.products(product_id) ON DELETE CASCADE,
+    viewed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_product_views_user
+ON public.product_views(user_id);
+
+CREATE INDEX IF NOT EXISTS idx_product_views_product
+ON public.product_views(product_id);
+
+
+-- 4. REVIEWS: ONE REVIEW PER USER AND PRODUCT
+CREATE UNIQUE INDEX IF NOT EXISTS idx_reviews_user_product
+ON public.reviews(user_id, product_id);
+
+
+-- 5. REPLENISHMENT HISTORY TABLES
+CREATE TABLE IF NOT EXISTS public.replenishment_runs (
+    run_id BIGSERIAL PRIMARY KEY,
+    source VARCHAR(16) NOT NULL CHECK (source = 'SYNTHETIC'),
+    model_name VARCHAR(128) NOT NULL,
+    model_version VARCHAR(64),
+    forecast_start DATE NOT NULL,
+    forecast_end DATE NOT NULL,
+    review_period_days INT NOT NULL CHECK (review_period_days >= 0),
+    metadata_snapshot JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    created_by_user_id INT
+        REFERENCES public.users(user_id) ON DELETE SET NULL,
+    CONSTRAINT replenishment_runs_forecast_period_check
+        CHECK (forecast_start <= forecast_end)
+);
+
+CREATE TABLE IF NOT EXISTS public.replenishment_recommendations (
+    recommendation_id BIGSERIAL PRIMARY KEY,
+    run_id BIGINT NOT NULL
+        REFERENCES public.replenishment_runs(run_id) ON DELETE RESTRICT,
+    recommendation_index INT NOT NULL
+        CHECK (recommendation_index >= 0),
+    synthetic_product_id VARCHAR(64) NOT NULL,
+    synthetic_supplier_id VARCHAR(64) NOT NULL,
+    supplier_name VARCHAR(150) NOT NULL,
+    recommendation_snapshot JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT replenishment_recommendations_run_index_uq
+        UNIQUE (run_id, recommendation_index)
+);
+
+CREATE TABLE IF NOT EXISTS public.replenishment_decisions (
+    decision_id BIGSERIAL PRIMARY KEY,
+    recommendation_id BIGINT NOT NULL
+        REFERENCES public.replenishment_recommendations(recommendation_id)
+        ON DELETE RESTRICT,
+    decision VARCHAR(10) NOT NULL
+        CHECK (decision IN ('ACCEPTED', 'REJECTED')),
+    decided_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    decided_by_user_id INT
+        REFERENCES public.users(user_id) ON DELETE SET NULL,
+    CONSTRAINT replenishment_decisions_recommendation_uq
+        UNIQUE (recommendation_id)
+);
+
+CREATE INDEX IF NOT EXISTS replenishment_runs_created_idx
+ON public.replenishment_runs(created_at DESC, run_id DESC);
+
+CREATE INDEX IF NOT EXISTS replenishment_recommendations_product_idx
+ON public.replenishment_recommendations
+(run_id, synthetic_product_id, recommendation_index);
+
+
+-- 6. SUPPORT REAL AND SYNTHETIC FORECASTS
+ALTER TABLE public.replenishment_runs
+DROP CONSTRAINT IF EXISTS replenishment_runs_source_check;
+
+ALTER TABLE public.replenishment_runs
+ADD CONSTRAINT replenishment_runs_source_check
+CHECK (source IN ('SYNTHETIC', 'DATABASE'));
+
+ALTER TABLE public.replenishment_recommendations
+ADD COLUMN IF NOT EXISTS product_id INTEGER;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'replenishment_recommendations_product_id_fkey'
+    ) THEN
+        ALTER TABLE public.replenishment_recommendations
+        ADD CONSTRAINT replenishment_recommendations_product_id_fkey
+        FOREIGN KEY (product_id)
+        REFERENCES public.products(product_id)
+        ON DELETE SET NULL;
+    END IF;
+END $$;
+
+
+-- 7. PERFORMANCE INDEXES
+CREATE INDEX IF NOT EXISTS idx_orders_order_date
+ON public.orders(order_date);
+
+CREATE INDEX IF NOT EXISTS idx_orders_status_date
+ON public.orders(status, order_date);
+
+CREATE INDEX IF NOT EXISTS idx_order_items_product
+ON public.order_items(product_id);
+
+CREATE INDEX IF NOT EXISTS idx_order_items_order
+ON public.order_items(order_id);
+
+CREATE INDEX IF NOT EXISTS idx_replenishment_product
+ON public.replenishment_recommendations(product_id);
+
+CREATE INDEX IF NOT EXISTS idx_replenishment_runs_source
+ON public.replenishment_runs(source);
+
+
+-- 8. PRODUCT SALES STATISTICS
+CREATE OR REPLACE VIEW public.product_sales_stats AS
+SELECT
+    p.product_id,
+    p.name AS product_name,
+    p.category_id,
+    p.price,
+    p.stock_quantity,
+
+    COALESCE(
+        SUM(oi.quantity) FILTER (
+            WHERE o.order_date >= CURRENT_DATE - INTERVAL '30 days'
+        ), 0
+    ) AS sold_30_days,
+
+    COALESCE(
+        SUM(oi.quantity) FILTER (
+            WHERE o.order_date >= CURRENT_DATE - INTERVAL '90 days'
+        ), 0
+    ) AS sold_90_days,
+
+    COALESCE(
+        SUM(oi.quantity) FILTER (
+            WHERE o.order_date >= CURRENT_DATE - INTERVAL '30 days'
+        ), 0
+    ) / 30.0 AS average_daily_sales
+
+FROM public.products p
+LEFT JOIN public.order_items oi
+    ON p.product_id = oi.product_id
+LEFT JOIN public.orders o
+    ON oi.order_id = o.order_id
+    AND LOWER(TRIM(o.status)) = 'delivered'
+    AND o.order_date >= CURRENT_DATE - INTERVAL '90 days'
+
+GROUP BY
+    p.product_id,
+    p.name,
+    p.category_id,
+    p.price,
+    p.stock_quantity;
+
+
+-- 9. FINAL PROCUREMENT FORECAST
+DROP VIEW IF EXISTS public.procurement_forecast;
+
+CREATE VIEW public.procurement_forecast AS
+
+WITH sales AS (
+    SELECT
+        oi.product_id,
+        SUM(oi.quantity) AS sales_180d
+    FROM public.order_items oi
+    JOIN public.orders o
+        ON o.order_id = oi.order_id
+    WHERE LOWER(TRIM(o.status)) IN ('delivered', 'shipped')
+      AND o.order_date >= CURRENT_DATE - INTERVAL '180 days'
+    GROUP BY oi.product_id
+),
+
+processing AS (
+    SELECT
+        oi.product_id,
+        SUM(oi.quantity) AS processing_quantity
+    FROM public.order_items oi
+    JOIN public.orders o
+        ON o.order_id = oi.order_id
+    WHERE LOWER(TRIM(o.status)) = 'processing'
+    GROUP BY oi.product_id
+),
+
+calculation AS (
+    SELECT
+        p.product_id,
+        p.name,
+        p.stock_quantity,
+        COALESCE(s.sales_180d, 0) AS sales_180d,
+        COALESCE(pr.processing_quantity, 0) AS processing_orders,
+
+        CEIL(COALESCE(s.sales_180d, 0) / 180.0 * 30)
+            AS forecast_30d,
+
+        CEIL(COALESCE(s.sales_180d, 0) / 180.0 * 14)
+            AS safety_stock
+
+    FROM public.products p
+    LEFT JOIN sales s
+        ON s.product_id = p.product_id
+    LEFT JOIN processing pr
+        ON pr.product_id = p.product_id
+)
+
+SELECT
+    product_id,
+    name,
+    stock_quantity,
+    sales_180d,
+    processing_orders,
+    forecast_30d,
+    safety_stock,
+
+    GREATEST(
+        forecast_30d + safety_stock - stock_quantity,
+        0
+    )::integer AS recommended_purchase,
+
+    CASE
+        WHEN stock_quantity <= safety_stock
+            THEN 'LOW STOCK'
+        WHEN forecast_30d + safety_stock > stock_quantity
+            THEN 'REORDER'
+        ELSE 'STOCK SUFFICIENT'
+    END AS procurement_status
+
+FROM calculation;
+
+COMMIT;
