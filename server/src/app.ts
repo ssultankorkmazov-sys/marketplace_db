@@ -47,6 +47,32 @@ type CheckoutLine = { product_id: number; quantity: number };
 const PAYMENT_METHODS: Record<string, string> = { card: 'Bank Card', kaspi: 'Kaspi Pay', cash: 'Cash on delivery' };
 const ORDER_STATUSES = new Set(['Processing', 'Shipped', 'Delivered', 'Cancelled']);
 type ProductInput = { name: string; description: string | null; price: number; stock_quantity: number; category_id: number };
+type ProcurementDataStatus = 'READY' | 'INSUFFICIENT_DATA' | 'NO_SALES' | 'NO_HISTORY';
+const MINIMUM_REPEAT_SALE_DAYS = 2;
+
+interface ProcurementForecastDbRow {
+  product_id: number | string;
+  name: string;
+  stock_quantity: number | string;
+  delivered_90d: number | string;
+  open_orders: number | string;
+  available_stock: number | string;
+  sales_180d: number | string;
+  processing_orders: number | string;
+  forecast_30d: number | string;
+  safety_stock: number | string;
+  recommended_purchase: number | string;
+  procurement_status: 'LOW STOCK' | 'REORDER' | 'STOCK SUFFICIENT';
+  sales_history_observations: number | string;
+  sales_observation_days_180d: number | string;
+  history_days_available: number | string;
+}
+
+function safeProcurementInteger(value: unknown): number {
+  const parsed = typeof value === 'number' || typeof value === 'string' ? Number(value) : NaN;
+  if (!Number.isSafeInteger(parsed) || parsed < 0) throw new Error('Procurement view returned an invalid numeric field.');
+  return parsed;
+}
 
 function validateProduct(input: unknown): ProductInput | null {
   if (!input || typeof input !== 'object') return null;
@@ -428,6 +454,85 @@ export function createApp(pool: Pool, options: { secureCookies?: boolean; allowL
       return response.json({ logs: logs.rows, page, pageSize, ...stats, totalPages: Math.ceil(stats.total / pageSize) });
     } catch (error) { return next(error); }
   });
+
+  app.get('/api/v1/admin/procurement/forecast', async (request, response, next) => {
+    try {
+      if (!await requireAdmin(request, response)) return;
+
+      const { rows } = await pool.query<ProcurementForecastDbRow>(
+        `SELECT forecast.product_id, forecast.name, forecast.stock_quantity,
+                forecast.stock_quantity AS available_stock,
+                COALESCE(history.delivered_quantity_90d, 0)::int AS delivered_90d,
+                forecast.processing_orders AS open_orders,
+                forecast.sales_180d, forecast.processing_orders, forecast.forecast_30d,
+                forecast.safety_stock, forecast.recommended_purchase, forecast.procurement_status,
+                COALESCE(history.sales_history_observations, 0)::int AS sales_history_observations,
+                COALESCE(history.sales_observation_days_180d, 0)::int AS sales_observation_days_180d,
+                CASE WHEN history.first_sale_date IS NULL THEN 0
+                     ELSE LEAST(180, GREATEST(0, CURRENT_DATE - history.first_sale_date))::int
+                END AS history_days_available
+         FROM public.procurement_forecast AS forecast
+         LEFT JOIN LATERAL (
+           SELECT MIN(order_row.order_date::date) AS first_sale_date,
+                  COUNT(*)::int AS sales_history_observations,
+                  COALESCE(SUM(item.quantity) FILTER (
+                    WHERE LOWER(TRIM(order_row.status)) = 'delivered'
+                      AND order_row.order_date >= CURRENT_DATE - INTERVAL '90 days'
+                      AND order_row.order_date < CURRENT_DATE + INTERVAL '1 day'
+                  ), 0)::bigint AS delivered_quantity_90d,
+                  COUNT(DISTINCT order_row.order_date::date) FILTER (
+                    WHERE order_row.order_date >= CURRENT_DATE - INTERVAL '180 days'
+                      AND order_row.order_date < CURRENT_DATE + INTERVAL '1 day'
+                  )::int AS sales_observation_days_180d
+           FROM public.order_items AS item
+           JOIN public.orders AS order_row ON order_row.order_id = item.order_id
+           WHERE item.product_id = forecast.product_id
+             AND LOWER(TRIM(order_row.status)) IN ('delivered', 'shipped')
+             AND order_row.order_date < CURRENT_DATE + INTERVAL '1 day'
+         ) AS history ON TRUE
+         ORDER BY forecast.recommended_purchase DESC, forecast.sales_180d DESC, forecast.name ASC`
+      );
+
+      return response.json({
+        forecast: rows.map((row) => {
+          const historyObservations = safeProcurementInteger(row.sales_history_observations);
+          const historyDaysAvailable = safeProcurementInteger(row.history_days_available);
+          const sales180d = safeProcurementInteger(row.sales_180d);
+          const recentSaleDays = safeProcurementInteger(row.sales_observation_days_180d);
+          const dataStatus: ProcurementDataStatus = historyObservations === 0
+            ? 'NO_HISTORY'
+            : historyDaysAvailable < 180
+              ? 'INSUFFICIENT_DATA'
+              : sales180d === 0
+                ? 'NO_SALES'
+                : recentSaleDays < MINIMUM_REPEAT_SALE_DAYS ? 'INSUFFICIENT_DATA' : 'READY';
+          const reliableWindow = dataStatus === 'READY';
+          return {
+            product_id: safeProcurementInteger(row.product_id),
+            name: row.name,
+            stock_quantity: safeProcurementInteger(row.stock_quantity),
+            delivered_90d: safeProcurementInteger(row.delivered_90d),
+            open_orders: safeProcurementInteger(row.open_orders),
+            available_stock: safeProcurementInteger(row.available_stock),
+            sales_180d: sales180d,
+            processing_orders: safeProcurementInteger(row.processing_orders),
+            forecast_30d: reliableWindow ? safeProcurementInteger(row.forecast_30d) : null,
+            safety_stock: reliableWindow ? safeProcurementInteger(row.safety_stock) : null,
+            recommended_purchase: reliableWindow ? safeProcurementInteger(row.recommended_purchase) : null,
+            procurement_status: reliableWindow ? row.procurement_status : null,
+            data_status: dataStatus,
+            sales_history_observations: historyObservations,
+            sales_observation_days_180d: recentSaleDays,
+            history_days_available: historyDaysAvailable,
+          };
+        }),
+        total: rows.length
+      });
+    } catch (error) {
+      return next(error);
+    }
+  });
+
 
   app.get('/api/v1/admin/logs/:logId', async (request, response, next) => {
     const logId = positiveBigIntId(request.params.logId);

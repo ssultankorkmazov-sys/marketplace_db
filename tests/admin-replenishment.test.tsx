@@ -16,6 +16,11 @@ const user = { ...admin, user_id: 11, role: 'user' }
 const run = { run_id: '7', source: 'SYNTHETIC', model_name: 'xgboost-demo', model_version: null, forecast_start: '2026-07-01', forecast_end: '2026-07-28', review_period_days: 7, created_at: '2026-11-17T12:00:00Z', created_by_user_id: 10, created_by_name: 'Admin', recommendation_count: 1, accepted_count: 0, rejected_count: 0, pending_count: 1 }
 const savedRecommendation = { ...report.recommendations.find((item: Record<string, unknown>) => item.recommendation_status === 'PURCHASE_RECOMMENDED'), recommendation_id: '31', recommendation_index: 0, decision_status: 'PENDING', decided_at: null, decided_by_user_id: null, decided_by_name: null }
 const page = (runs = [], total = runs.length, pageNo = 1, totalPages = total ? 1 : 0) => ({ runs, total, page: pageNo, pageSize: 10, totalPages })
+const forecastRow = {
+  product_id: 42, name: 'Чай', stock_quantity: 10, available_stock: 10, delivered_90d: 12, open_orders: 3, sales_180d: 24, processing_orders: 3,
+  forecast_30d: 4, safety_stock: 2, recommended_purchase: 1, procurement_status: 'REORDER',
+  data_status: 'READY', sales_history_observations: 4, sales_observation_days_180d: 3, history_days_available: 180,
+}
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks() })
 beforeEach(() => { window.history.replaceState({}, '', '/') })
@@ -24,10 +29,66 @@ function initialFetch(input: RequestInfo | URL) {
   const url = new URL(String(input), window.location.href)
   if (url.pathname.endsWith('/admin/replenishment/demo')) return json(report)
   if (url.pathname.endsWith('/admin/replenishment/runs')) return json(page())
+  if (url.pathname.endsWith('/admin/procurement/forecast')) return json({ forecast: [forecastRow], total: 1 })
   return json({ error: 'Unexpected request' }, 500)
 }
 
 describe('Smart Replenishment synthetic history dashboard', () => {
+  it('shows the backend procurement forecast and keeps the synthetic and history sections', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => initialFetch(input)))
+    render(<BrowserRouter><AdminReplenishment/></BrowserRouter>)
+
+    expect(await screen.findByRole('heading', { name: 'Smart Replenishment' })).toBeTruthy()
+    expect(await screen.findByText('Прогноз закупок по реальным данным')).toBeTruthy()
+    expect(screen.getByText('Чай')).toBeTruthy()
+    expect(screen.getByText('Окно 180 дней и продажи в ≥2 дня')).toBeTruthy()
+    expect(screen.getByText('Источник: SYNTHETIC.')).toBeTruthy()
+    expect(screen.getByRole('region', { name: 'История запусков' })).toBeTruthy()
+  })
+
+  it('shows loading, error and empty states for the live procurement API without synthetic fallback', async () => {
+    const delayedFetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), window.location.href)
+      if (url.pathname.endsWith('/admin/procurement/forecast')) return await new Promise<Response>(() => {})
+      return initialFetch(input)
+    })
+    vi.stubGlobal('fetch', delayedFetch)
+    const view = render(<BrowserRouter><AdminReplenishment/></BrowserRouter>)
+    expect(await screen.findByText('Загрузка прогноза закупок…')).toBeTruthy()
+    view.unmount()
+
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), window.location.href)
+      return url.pathname.endsWith('/admin/procurement/forecast') ? json({ error: 'unavailable' }, 503) : initialFetch(input)
+    }))
+    render(<BrowserRouter><AdminReplenishment/></BrowserRouter>)
+    expect(await screen.findByRole('alert')).toBeTruthy()
+    expect(screen.queryByText('Чай')).toBeNull()
+    cleanup()
+
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), window.location.href)
+      return url.pathname.endsWith('/admin/procurement/forecast') ? json({ forecast: [], total: 0 }) : initialFetch(input)
+    }))
+    render(<BrowserRouter><AdminReplenishment/></BrowserRouter>)
+    expect(await screen.findByText(/VIEW не вернул товаров/)).toBeTruthy()
+  })
+
+  it('does not show purchase forecasts for insufficient history but retains stock and processing orders', async () => {
+    const insufficient = { ...forecastRow, data_status: 'INSUFFICIENT_DATA', history_days_available: 70, forecast_30d: null, safety_stock: null, recommended_purchase: null, procurement_status: null }
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), window.location.href)
+      return url.pathname.endsWith('/admin/procurement/forecast') ? json({ forecast: [insufficient], total: 1 }) : initialFetch(input)
+    }))
+    render(<BrowserRouter><AdminReplenishment/></BrowserRouter>)
+    const row = await screen.findByText('Чай')
+    const tableRow = row.closest('tr')
+    expect(tableRow?.textContent).toContain('Недостаточно истории')
+    expect(tableRow?.textContent).toContain('10')
+    expect(tableRow?.textContent).toContain('3')
+    expect(tableRow?.textContent).toContain('—')
+  })
+
   it('loads the synthetic preview and history without creating a run automatically', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => initialFetch(input))
     vi.stubGlobal('fetch', fetchMock)
@@ -186,6 +247,7 @@ describe('Smart Replenishment synthetic history dashboard', () => {
     Object.assign(row, { forecast_demand: null, recommended_quantity: null, estimated_cost: null, recommendation_status: 'INSUFFICIENT_FORECAST', explanation: 'Недостаточно прогноза для срока покрытия.' })
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       if (String(input).includes('/demo')) return json(insufficient)
+      if (String(input).includes('/admin/procurement/forecast')) return json({ forecast: [forecastRow], total: 1 })
       return json(page())
     })
     vi.stubGlobal('fetch', fetchMock)

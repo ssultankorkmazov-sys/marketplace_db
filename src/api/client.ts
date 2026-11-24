@@ -88,6 +88,35 @@ export const ordersApi = {
 
 export interface AdminOrder { order: ApiOrder; user: Pick<AuthUser, 'user_id'|'name'|'email'|'phone'|'address'>; payment: ApiPayment | null; items: ApiOrderLine[] }
 export interface AdminCategory extends Category { count: number }
+
+
+export type ProcurementDataStatus = 'READY' | 'INSUFFICIENT_DATA' | 'NO_SALES' | 'NO_HISTORY'
+
+export interface ProcurementForecastItem {
+  product_id: number;
+  name: string;
+  stock_quantity: number;
+  delivered_90d: number;
+  open_orders: number;
+  available_stock: number;
+  sales_180d: number;
+  processing_orders: number;
+  forecast_30d: number | null;
+  safety_stock: number | null;
+  recommended_purchase: number | null;
+  procurement_status: 'LOW STOCK' | 'REORDER' | 'STOCK SUFFICIENT' | null;
+  data_status: ProcurementDataStatus;
+  sales_history_observations: number;
+  sales_observation_days_180d: number;
+  history_days_available: number;
+}
+
+export interface ProcurementForecastResponse {
+  forecast: ProcurementForecastItem[];
+  total: number;
+}
+
+
 export interface AdminUser extends Pick<AuthUser, 'user_id'|'name'|'email'|'phone'|'address'> { order_count: number; review_count: number }
 export interface AdminReview {
   review_id: number; user_id: number; product_id: number; rating: number; comment: string | null; review_date: string;
@@ -220,6 +249,8 @@ export function auditWebSocketUrl(): string {
 
 export const adminApi = {
   async replenishmentDemo() { return request<ReplenishmentDemoReport>('/admin/replenishment/demo') },
+  async procurementForecast() { return request<ProcurementForecastResponse>('/admin/procurement/forecast') },
+
   async createReplenishmentRun() { return request<{ run: ReplenishmentRun }>('/admin/replenishment/runs', { method: 'POST' }) },
   async replenishmentRuns(page = 1, pageSize = 10) {
     const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) })

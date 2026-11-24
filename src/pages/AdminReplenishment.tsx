@@ -1,5 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { adminApi, type ReplenishmentDemoReport, type ReplenishmentRun, type SavedReplenishmentRecommendation } from '../api/client'
+
+import {
+  adminApi,
+  type ReplenishmentDemoReport,
+  type ReplenishmentRun,
+  type SavedReplenishmentRecommendation,
+  type ProcurementForecastItem
+} from '../api/client'
+
 import { btn } from '../components/ui'
 
 type Page<T> = { items: T[]; page: number; totalPages: number; total: number }
@@ -10,6 +18,12 @@ const date = (value: string | null) => value ? new Date(value).toLocaleString('r
 const statusLabel: Record<string, string> = {
   PURCHASE_RECOMMENDED: 'Рекомендуется закупка', NO_PURCHASE_NEEDED: 'Закупка не нужна', INSUFFICIENT_FORECAST: 'Недостаточно прогноза',
   PENDING: 'Ожидает решения', ACCEPTED: 'Принято администратором', REJECTED: 'Отклонено администратором',
+}
+const procurementDataStatusLabel: Record<string, string> = {
+  READY: 'Окно 180 дней и продажи в ≥2 дня',
+  INSUFFICIENT_DATA: 'Недостаточно истории',
+  NO_SALES: 'За 180 дней продаж не зарегистрировано',
+  NO_HISTORY: 'Истории продаж нет',
 }
 
 export function parseReplenishmentReport(value: unknown): ReplenishmentDemoReport {
@@ -27,6 +41,9 @@ export function parseReplenishmentReport(value: unknown): ReplenishmentDemoRepor
 
 export function AdminReplenishment() {
   const [report, setReport] = useState<ReplenishmentDemoReport | null>(null)
+  const [forecast, setForecast] = useState<ProcurementForecastItem[]>([])
+  const [forecastLoading, setForecastLoading] = useState(true)
+  const [forecastError, setForecastError] = useState('')
   const [runs, setRuns] = useState<Page<ReplenishmentRun>>({ items: [], page: 1, total: 0, totalPages: 0 })
   const [selectedRun, setSelectedRun] = useState<ReplenishmentRun | null>(null)
   const [recommendations, setRecommendations] = useState<Page<SavedReplenishmentRecommendation>>({ items: [], page: 1, total: 0, totalPages: 0 })
@@ -64,6 +81,34 @@ export function AdminReplenishment() {
       .catch((reason: unknown) => { if (active) setError(reason instanceof Error ? reason.message : 'Не удалось загрузить данные.') })
       .finally(() => { if (active) setLoading(false) })
     return () => { active = false }
+  }, [])
+
+  useEffect(() => {
+    let active = true
+
+    adminApi.procurementForecast()
+      .then(result => {
+        if (!result || !Array.isArray(result.forecast)) throw new Error('Backend вернул некорректный формат прогноза закупок.')
+        if (active) {
+          setForecast(result.forecast)
+        }
+      })
+      .catch((reason: unknown) => {
+        if (active) {
+          setForecastError(
+            reason instanceof Error
+              ? reason.message
+              : 'Не удалось загрузить прогноз закупок.'
+          )
+        }
+      })
+      .finally(() => {
+        if (active) setForecastLoading(false)
+      })
+
+    return () => {
+      active = false
+    }
   }, [])
 
   const selectRun = async (run: ReplenishmentRun | null) => {
@@ -111,6 +156,9 @@ export function AdminReplenishment() {
     if (!costs.length) return sum
     return (sum ?? 0) + Math.min(...costs)
   }, null)
+  const readyForecasts = forecast.filter(item => item.data_status === 'READY')
+  const purchaseRecommendations = readyForecasts.filter(item => (item.recommended_purchase ?? 0) > 0)
+  const totalRecommendedPurchase = purchaseRecommendations.reduce((sum, item) => sum + (item.recommended_purchase ?? 0), 0)
 
   if (loading) return <div className="py-12 text-center text-neutral-500">Загрузка демонстрационных данных…</div>
   if (!report && error) return <main className="space-y-4"><h1 className="text-2xl font-bold">Smart Replenishment</h1><p role="alert" className="rounded-lg bg-red-50 p-4 text-brand">{error}</p></main>
@@ -118,6 +166,49 @@ export function AdminReplenishment() {
   return <main className="space-y-5">
     <header className="flex flex-wrap items-center justify-between gap-3"><div><h1 className="text-2xl font-bold">Smart Replenishment</h1><p className="mt-1 text-sm text-neutral-600">Экспериментальные рекомендации по синтетическому спросу и поставщикам.</p></div>
       <button className={btn.primary} disabled={saving || !report} onClick={createRun}>{saving ? 'Сохраняем…' : 'Сохранить новый запуск'}</button></header>
+    <section className={box} aria-labelledby="procurement-forecast-heading">
+      <div>
+        <h2 id="procurement-forecast-heading" className="text-xl font-bold">Прогноз закупок по реальным данным</h2>
+        <p className="text-sm text-neutral-600">Источник: public.procurement_forecast. Продажи за 180 дней в VIEW включают Delivered и Shipped; delivered_90d отдельно считает только Delivered. Открытые заказы — количество товара в статусе Processing.</p>
+        <p className="mt-1 text-xs text-neutral-500">Доступный остаток равен текущему products.stock_quantity: backend уже уменьшает его при оформлении заказа. Не вычитайте Processing повторно.</p>
+        <p className="mt-1 text-xs text-neutral-500">READY требует, чтобы первая зарегистрированная продажа была не менее 180 дней назад и продажи встречались минимум в два разных дня окна. Это минимальный инженерный фильтр повторяемости, а не статистическая гарантия; полнота журнала и доступность товара по дням неизвестны.</p>
+      </div>
+      {forecastLoading && <p role="status" className="py-6 text-center text-neutral-500">Загрузка прогноза закупок…</p>}
+      {forecastError && <p role="alert" className="mt-4 rounded-lg bg-red-50 p-3 text-sm text-red-700">Не удалось загрузить прогноз из backend: {forecastError}</p>}
+      {!forecastLoading && !forecastError && forecast.length === 0 && <p role="status" className="mt-4 rounded-lg bg-neutral-50 p-4 text-sm text-neutral-600">VIEW не вернул товаров. Данные синтетического раздела не подставляются вместо реального прогноза.</p>}
+      {!forecastLoading && !forecastError && forecast.length > 0 && <>
+        <div className="mt-4 grid gap-3 sm:grid-cols-3">
+          <div className={box}><p className="text-sm text-neutral-500">Товаров в источнике</p><p className="text-2xl font-bold">{forecast.length}</p></div>
+          <div className={box}><p className="text-sm text-neutral-500">Достаточная история</p><p className="text-2xl font-bold">{readyForecasts.length}</p></div>
+          <div className={box}><p className="text-sm text-neutral-500">Рекомендуется докупить</p><p className="text-2xl font-bold">{purchaseRecommendations.length} · {totalRecommendedPurchase.toLocaleString('ru-RU')} шт.</p></div>
+        </div>
+        <div className="mt-4 overflow-x-auto rounded-xl border border-neutral-200 bg-white">
+          <table className="w-full text-sm">
+            <thead className="bg-neutral-50"><tr className="text-left">
+              <th className="p-3">Товар</th><th className="p-3">Остаток</th><th className="p-3">Доступный остаток</th>
+              <th className="p-3">Поставлено за 90 дней</th><th className="p-3">Продажи, 180 дней</th>
+              <th className="p-3">Открытые заказы, шт.</th><th className="p-3">Прогноз, 30 дней</th>
+              <th className="p-3">Страховой запас</th><th className="p-3">Закупить</th><th className="p-3">Статус данных</th>
+            </tr></thead>
+            <tbody>{forecast.map(item => {
+              const sufficient = item.data_status === 'READY'
+              return <tr className="border-t border-neutral-100" key={item.product_id}>
+                <th className="p-3 text-left font-medium">{item.name}<span className="block text-xs text-neutral-500">ID {item.product_id}</span></th>
+                <td className="p-3">{item.stock_quantity.toLocaleString('ru-RU')}</td>
+                <td className="p-3">{item.available_stock.toLocaleString('ru-RU')}</td>
+                <td className="p-3">{item.delivered_90d.toLocaleString('ru-RU')}</td>
+                <td className="p-3">{item.sales_180d.toLocaleString('ru-RU')}<span className="block text-xs text-neutral-500">Дней с продажами: {item.sales_observation_days_180d}</span></td>
+                <td className="p-3">{item.open_orders.toLocaleString('ru-RU')}</td>
+                <td className="p-3">{sufficient ? item.forecast_30d?.toLocaleString('ru-RU') : '—'}</td>
+                <td className="p-3">{sufficient ? item.safety_stock?.toLocaleString('ru-RU') : '—'}</td>
+                <td className="p-3">{item.data_status === 'READY' && item.recommended_purchase !== null ? item.recommended_purchase.toLocaleString('ru-RU') : '—'}</td>
+                <td className="p-3"><span>{procurementDataStatusLabel[item.data_status]}</span><span className="mt-1 block text-xs text-neutral-500">Охват: {item.history_days_available}/180 дней</span>{!sufficient && <span className="mt-1 block max-w-xs text-xs text-neutral-500">Остаток и заказы показаны; прогноз и закупка не рассчитываются.</span>}</td>
+              </tr>
+            })}</tbody>
+          </table>
+        </div>
+      </>}
+    </section>
     <div role="note" className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950"><strong>Источник: SYNTHETIC.</strong> This is a synthetic demonstration. These recommendations do not represent real MarketKZ stock, sales, suppliers, or purchase orders. Решение администратора фиксирует только намерение: заказ поставщику не создаётся, складские остатки не меняются.</div>
     {error && <p role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-brand">{error}</p>}{notice && <p role="status" className="rounded-lg bg-green-50 p-3 text-sm text-green-800">{notice}</p>}
     <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4" aria-label="Сводка синтетического отчёта">
