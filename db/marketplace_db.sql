@@ -643,7 +643,57 @@ GROUP BY
     p.stock_quantity;
 
 
--- 9. FINAL PROCUREMENT FORECAST
+-- 9. REPLENISHMENT FORECAST WITH STOCK STATUS
+
+CREATE OR REPLACE VIEW public.replenishment_forecast AS
+SELECT
+    product_id,
+    product_name,
+    category_id,
+    price,
+    stock_quantity,
+    sold_30_days,
+    sold_90_days,
+    ROUND(daily_sales, 2) AS daily_sales,
+    CEIL(daily_sales * 30) AS forecast_30_days,
+    CEIL(daily_sales * 7) AS safety_stock,
+
+    GREATEST(
+        0,
+        CEIL(daily_sales * 37) - stock_quantity
+    ) AS recommended_purchase,
+
+    CASE
+        WHEN daily_sales = 0 THEN NULL
+        ELSE ROUND(stock_quantity / daily_sales, 1)
+    END AS stock_days,
+
+    CASE
+        WHEN stock_quantity = 0 AND daily_sales > 0
+            THEN 'OUT OF STOCK'
+        WHEN daily_sales > 0
+             AND stock_quantity / daily_sales <= 7
+            THEN 'URGENT'
+        WHEN daily_sales > 0
+             AND stock_quantity / daily_sales <= 14
+            THEN 'LOW STOCK'
+        WHEN daily_sales = 0
+            THEN 'NO SALES'
+        ELSE 'STOCK OK'
+    END AS stock_status
+
+FROM (
+    SELECT
+        product_sales_stats.*,
+        CASE
+            WHEN sold_30_days > 0
+                THEN sold_30_days::numeric / 30.0
+            ELSE sold_90_days::numeric / 90.0
+        END AS daily_sales
+    FROM public.product_sales_stats
+) sales;
+
+-- 10. FINAL PROCUREMENT FORECAST
 DROP VIEW IF EXISTS public.procurement_forecast;
 
 CREATE VIEW public.procurement_forecast AS
